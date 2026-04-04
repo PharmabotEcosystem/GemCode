@@ -35,6 +35,7 @@ import android.graphics.BitmapFactory
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import com.example.agent.core.AgentLoop
+import com.example.agent.core.LiteRtLmInference
 import com.example.agent.core.MediaPipeLlmInference
 import com.example.agent.core.ModelDownloader
 import com.example.agent.core.DownloadState
@@ -99,26 +100,45 @@ data class GemmaModel(
  */
 val AVAILABLE_MODELS = listOf(
 
-    // ── Gemma 4 1B — on-device, Google I/O 2025 ─────────────────────────────
-    // Architettura ottimizzata per mobile: ~700 MB int4, finestra 8192 token
+    // ── Gemma 4 E2B / E4B — LiteRT-LM (.litertlm), nessuna autenticazione ────
+    // Distribuiti da litert-community su HuggingFace (Apache 2.0).
+    // NOTA: CPU e GPU usano lo STESSO file — il backend si sceglie a runtime.
+    // Scaricare una variante rende automaticamente disponibile anche l'altra.
     GemmaModel(
-        name = "Gemma 4 1B IT (CPU, int4)  ~700 MB",
-        url = "https://storage.googleapis.com/mediapipe-models/llm_inference/gemma4-1b-it-cpu-int4/float16/1/gemma4-1b-it-cpu-int4.task",
-        filename = "gemma4_1b_it_cpu_int4.task",
+        name = "Gemma 4 E2B IT (CPU)  ~2.6 GB",
+        url = "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm?download=true",
+        filename = "gemma4_e2b_it.litertlm",
         useGpu = false,
         maxTokens = 8192,
-        fileSizeMb = 700
+        fileSizeMb = 2580
     ),
     GemmaModel(
-        name = "Gemma 4 1B IT (GPU, int4)  ~700 MB",
-        url = "https://storage.googleapis.com/mediapipe-models/llm_inference/gemma4-1b-it-gpu-int4/float16/1/gemma4-1b-it-gpu-int4.task",
-        filename = "gemma4_1b_it_gpu_int4.task",
+        name = "Gemma 4 E2B IT (GPU)  ~2.6 GB",
+        url = "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm?download=true",
+        filename = "gemma4_e2b_it.litertlm",  // stesso file del variant CPU
         useGpu = true,
         maxTokens = 8192,
-        fileSizeMb = 700
+        fileSizeMb = 2580
+    ),
+    GemmaModel(
+        name = "Gemma 4 E4B IT (CPU)  ~3.7 GB",
+        url = "https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it.litertlm?download=true",
+        filename = "gemma4_e4b_it.litertlm",
+        useGpu = false,
+        maxTokens = 8192,
+        fileSizeMb = 3650
+    ),
+    GemmaModel(
+        name = "Gemma 4 E4B IT (GPU)  ~3.7 GB",
+        url = "https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it.litertlm?download=true",
+        filename = "gemma4_e4b_it.litertlm",  // stesso file del variant CPU
+        useGpu = true,
+        maxTokens = 8192,
+        fileSizeMb = 3650
     ),
 
-    // ── Gemma 3 1B — fallback stabile, confermato su MediaPipe 0.10.22 ───────
+    // ── Gemma 3 1B — MediaPipe tasks-genai (.task) ────────────────────────────
+    // Distribuzione: storage.googleapis.com/mediapipe-models (pubblico, no auth)
     GemmaModel(
         name = "Gemma 3 1B IT (CPU, int4)  ~700 MB",
         url = "https://storage.googleapis.com/mediapipe-models/llm_inference/gemma3-1b-it-cpu-int4/float16/1/gemma3-1b-it-cpu-int4.task",
@@ -226,14 +246,9 @@ class MainActivity : ComponentActivity(), Shizuku.OnRequestPermissionResultListe
         val selectedModel = AVAILABLE_MODELS[selectedModelIndex]
         val modelFile = File(applicationContext.filesDir, selectedModel.filename)
         val llmInference = if (modelFile.exists()) {
-            MediaPipeLlmInference(
-                context = applicationContext,
-                modelPath = modelFile.absolutePath,
-                useGpu = selectedModel.useGpu,
-                maxTokens = selectedModel.maxTokens
-            )
+            createInferenceEngine(applicationContext, modelFile, selectedModel)
         } else {
-            DummyLlmInference() // Fallback temporaneo se il modello non è stato scaricato
+            DummyLlmInference() // Fallback: modello non ancora scaricato
         }
 
         // 2. Istanziazione dei Tool
@@ -287,12 +302,7 @@ class MainActivity : ComponentActivity(), Shizuku.OnRequestPermissionResultListe
                             if (newModelFile.exists()) {
                                 agentLoop = AgentLoop(
                                     tools = listOf(fileSystemTool, settingsTool, uiInteractTool, skillTool, googleIntegrationTool, mcpTool),
-                                    llmInference = MediaPipeLlmInference(
-                                        context = applicationContext,
-                                        modelPath = newModelFile.absolutePath,
-                                        useGpu = newModel.useGpu,
-                                        maxTokens = newModel.maxTokens
-                                    ),
+                                    llmInference = createInferenceEngine(applicationContext, newModelFile, newModel),
                                     memoryManager = memoryManager
                                 )
                             }
@@ -825,6 +835,30 @@ fun ModelSelectionCard(
             }
         }
     }
+}
+
+/**
+ * Factory che seleziona automaticamente il motore di inferenza corretto
+ * in base all'estensione del file modello:
+ * - `.litertlm` → [LiteRtLmInference] (LiteRT-LM, Gemma 4)
+ * - `.task` / `.bin` → [MediaPipeLlmInference] (MediaPipe legacy, Gemma 2B/3)
+ */
+fun createInferenceEngine(
+    context: Context,
+    modelFile: File,
+    model: GemmaModel
+): LlmInferenceWrapper = when {
+    modelFile.name.endsWith(".litertlm") -> LiteRtLmInference(
+        context = context,
+        modelPath = modelFile.absolutePath,
+        useGpu = model.useGpu
+    )
+    else -> MediaPipeLlmInference(
+        context = context,
+        modelPath = modelFile.absolutePath,
+        useGpu = model.useGpu,
+        maxTokens = model.maxTokens
+    )
 }
 
 // --- Dummy Implementations for compilation ---
