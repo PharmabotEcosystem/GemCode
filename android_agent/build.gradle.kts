@@ -135,7 +135,14 @@ dependencies {
     // ── MediaPipe LLM Inference ───────────────────────────────────────────────
     // mmap del modello gestito internamente da LiteRT via setModelPath().
     // Non usare mai ByteArray per caricare i pesi — vedere ResourceManager.
-    implementation("com.google.mediapipe:tasks-genai:0.10.14")
+    // MediaPipe LLM Inference (deprecato ma necessario per modelli Gemma 2B legacy in .bin/.task)
+    implementation("com.google.mediapipe:tasks-genai:0.10.22")
+
+    // ── LiteRT-LM (successore di MediaPipe LLM Inference) ───────────────────
+    // Richiesto per Gemma 4 (formato .litertlm). Supporta Backend.CPU/GPU/NPU,
+    // Conversation multi-turn, streaming via Flow<Message>.
+    // Gemma 4 NON funziona con tasks-genai — usare questa dipendenza.
+    implementation("com.google.ai.edge.litertlm:litertlm-android:0.10.0")
 
     // ── Room (VectorMemoryDB) ────────────────────────────────────────────────
     // KSP genera i DAO implementation a compile time — zero reflection a runtime.
@@ -154,6 +161,11 @@ dependencies {
 
     // ── Networking (per GeminiApiLlmInference e MCPTool) ────────────────────
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
+    // ── NanoHTTPD — server HTTP locale per il web frontend ───────────────────
+    // InferenceHttpServer espone POST /api/chat (Ollama-compatible) su porta 8080
+    // così il browser può chiamare Gemma 4 senza nessuna API cloud.
+    implementation("org.nanohttpd:nanohttpd:2.3.1")
 
     // ── Debug tools ──────────────────────────────────────────────────────────
     debugImplementation("androidx.compose.ui:ui-tooling")

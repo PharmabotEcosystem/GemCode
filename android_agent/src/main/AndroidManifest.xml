@@ -45,6 +45,15 @@
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!--
+        LiteRT-LM GPU/NPU acceleration — librerie native opzionali.
+        required="false": l'app avvia anche su dispositivi senza queste librerie,
+        LiteRtLmInference fa fallback automatico a CPU.
+        Obbligatorio dichiarare qui per accedere alle librerie vendor su API 29+.
+    -->
+    <uses-native-library android:name="libvndksupport.so"  android:required="false" />
+    <uses-native-library android:name="libOpenCL.so"       android:required="false" />
+
     <application
         android:name=".AgentApplication"
         android:allowBackup="true"

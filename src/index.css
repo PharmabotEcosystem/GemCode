@@ -1,42 +1,70 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 @import "tailwindcss";
 
+/* ─── Design tokens — Gemini-inspired dark theme ───────────────────────────── */
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
-  --font-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
-  
-  --color-neon-green: #39ff14;
-  --color-neon-purple: #b026ff;
-  --color-neon-blue: #00f3ff;
-  --color-neon-red: #ff003c;
-  --color-dark-bg: #0a0a0c;
-  --color-dark-surface: #121216;
-  --color-dark-border: #2a2a35;
+
+  /* Backgrounds */
+  --color-base:     #131314;   /* main background */
+  --color-surface:  #1c1c1e;   /* sidebar, panels */
+  --color-elevated: #28282c;   /* cards, inputs, hover states */
+
+  /* Borders */
+  --color-border:   #3a3a3e;
+
+  /* Text */
+  --color-primary:   #e8eaed;  /* main text */
+  --color-secondary: #9aa0a6;  /* labels, descriptions */
+  --color-muted:     #5f6368;  /* placeholders, timestamps */
+
+  /* Accent — Google Blue (dark mode) */
+  --color-accent:       #8ab4f8;
+  --color-accent-hover: #669df6;
 }
 
+/* ─── Base ──────────────────────────────────────────────────────────────────── */
 @layer base {
-  body {
-    @apply bg-[var(--color-dark-bg)] text-gray-300 font-sans antialiased;
+  *, *::before, *::after {
+    box-sizing: border-box;
   }
-  
+
+  body {
+    @apply bg-base text-primary font-sans antialiased;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
   h1, h2, h3, h4, h5, h6 {
-    @apply font-display tracking-tight text-white;
+    @apply text-primary tracking-tight;
   }
 }
 
-/* Custom scrollbar for gritty feel */
+/* ─── Scrollbar ──────────────────────────────────────────────────────────────── */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: var(--color-dark-bg);
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--color-dark-border);
-  border-radius: 4px;
+  background: var(--color-border);
+  border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #4a4a5a;
+  background: #5a5a60;
+}
+
+/* ─── Range input ───────────────────────────────────────────────────────────── */
+input[type="range"] {
+  height: 4px;
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+/* ─── Textarea ──────────────────────────────────────────────────────────────── */
+textarea {
+  scrollbar-width: thin;
 }
