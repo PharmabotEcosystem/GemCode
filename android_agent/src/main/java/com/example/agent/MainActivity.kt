@@ -36,8 +36,10 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import com.example.agent.core.AgentLoop
 import com.example.agent.core.LiteRtLmInference
+import com.example.agent.core.LlmInferenceWrapper
 import com.example.agent.core.MediaPipeLlmInference
 import com.example.agent.core.ModelDownloader
+import com.example.agent.service.InferenceHttpServer
 import com.example.agent.core.DownloadState
 import java.io.File
 import kotlinx.coroutines.flow.collectLatest
@@ -194,6 +196,14 @@ val AVAILABLE_MODELS = listOf(
 class MainActivity : ComponentActivity(), Shizuku.OnRequestPermissionResultListener {
 
     private lateinit var agentLoop: AgentLoop
+
+    /**
+     * Server HTTP locale (porta 8080) che espone l'API di inferenza Gemma
+     * in formato Ollama-compatibile per il web frontend.
+     * Avviato dopo il caricamento del modello, fermato in [onDestroy].
+     */
+    private var inferenceServer: InferenceHttpServer? = null
+
     private var shizukuState by mutableStateOf(ShizukuState.UNAVAILABLE)
     private var hasStoragePermission by mutableStateOf(false)
     private var conversationHistory by mutableStateOf("")
@@ -270,6 +280,13 @@ class MainActivity : ComponentActivity(), Shizuku.OnRequestPermissionResultListe
             memoryManager = memoryManager
         )
 
+        // 4. Avvia il server HTTP locale (porta 8080) per il web frontend.
+        //    Il server espone POST /api/chat in formato Ollama-compatibile,
+        //    così il browser può chiamare Gemma 4 direttamente senza cloud API.
+        //    Se il modello non è ancora scaricato, il server risponde con errore
+        //    esplicito finché non viene reinizializzato con startInferenceServer().
+        startInferenceServer(llmInference)
+
         lifecycleScope.launch {
             conversationHistory = memoryManager.getConversationState() ?: ""
         }
@@ -300,11 +317,14 @@ class MainActivity : ComponentActivity(), Shizuku.OnRequestPermissionResultListe
                             val newModel = AVAILABLE_MODELS[newIndex]
                             val newModelFile = File(applicationContext.filesDir, newModel.filename)
                             if (newModelFile.exists()) {
+                                val newEngine = createInferenceEngine(applicationContext, newModelFile, newModel)
                                 agentLoop = AgentLoop(
                                     tools = listOf(fileSystemTool, settingsTool, uiInteractTool, skillTool, googleIntegrationTool, mcpTool),
-                                    llmInference = createInferenceEngine(applicationContext, newModelFile, newModel),
+                                    llmInference = newEngine,
                                     memoryManager = memoryManager
                                 )
+                                // Riavvia il server HTTP con il nuovo engine
+                                startInferenceServer(newEngine)
                             }
                         },
                         onRequestShizukuPermission = { Shizuku.requestPermission(100) },
@@ -356,9 +376,19 @@ class MainActivity : ComponentActivity(), Shizuku.OnRequestPermissionResultListe
 
     override fun onDestroy() {
         super.onDestroy()
+        inferenceServer?.stop()
+        inferenceServer = null
         Shizuku.removeRequestPermissionResultListener(this)
         Shizuku.removeBinderReceivedListener(binderReceivedListener)
         Shizuku.removeBinderDeadListener(binderDeadListener)
+    }
+
+    private fun startInferenceServer(engine: LlmInferenceWrapper) {
+        inferenceServer?.stop()
+        inferenceServer = InferenceHttpServer(
+            port = InferenceHttpServer.DEFAULT_PORT,
+            llmInference = engine
+        ).also { it.start() }
     }
 
     override fun onResume() {

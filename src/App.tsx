@@ -52,8 +52,11 @@ interface AppSettings {
 
 const DEFAULT_SETTINGS: AppSettings = {
   backend: 'ollama',
-  ollamaHost: 'http://localhost:11434',
-  ollamaModel: 'gemma3:4b',
+  // Default: Android agent in esecuzione sulla stessa macchina o rete locale.
+  // Cambia l'IP con quello del dispositivo Android (es. http://192.168.1.100:8080).
+  // L'agent espone POST /api/chat in formato Ollama-compatible su porta 8080.
+  ollamaHost: 'http://localhost:8080',
+  ollamaModel: 'gemma4',
   temperature: 0.7,
   systemPrompt:
     'Sei GemCode Assistant, un assistente AI utile, preciso e conciso. ' +
@@ -539,8 +542,8 @@ export default function App() {
                       active={settings.backend === 'ollama'}
                       onClick={() => setSettings(s => ({ ...s, backend: 'ollama' }))}
                       icon={<Server className="w-4 h-4" />}
-                      title="Ollama"
-                      description="Server locale — qualsiasi modello"
+                      title="GemCode Agent / Ollama"
+                      description="Android agent locale su porta 8080"
                       status={ollamaStatus === 'online' ? 'ok' : ollamaStatus === 'offline' ? 'error' : 'checking'}
                       statusLabel={ollamaStatus === 'online' ? 'Online' : ollamaStatus === 'offline' ? 'Non raggiungibile' : '…'}
                     />
@@ -577,17 +580,23 @@ export default function App() {
                           value={settings.ollamaModel}
                           onChange={e => setSettings(s => ({ ...s, ollamaModel: e.target.value }))}
                           className="w-full bg-elevated border border-border rounded-xl px-3 py-2 text-sm text-primary focus:border-accent/50 focus:outline-none transition-colors"
-                          placeholder="gemma3:4b"
+                          placeholder="gemma4"
                         />
                         <p className="text-xs text-muted mt-1.5">
-                          Es: gemma3:4b · llama3.2 · phi4-mini · qwen2.5
+                          GemCode Agent: <span className="font-mono">gemma4</span> · Ollama: gemma3:4b · llama3.2
                         </p>
                       </div>
                       {ollamaStatus === 'offline' && (
-                        <div className="rounded-xl bg-red-500/10 border border-red-500/20 px-3 py-2.5 text-xs text-red-400 space-y-1">
-                          <p className="font-medium">Ollama non raggiungibile</p>
-                          <p className="text-red-400/80">Avvia il server con: <code className="font-mono bg-red-500/10 px-1 rounded">ollama serve</code></p>
-                          <p className="text-red-400/80">Scarica il modello: <code className="font-mono bg-red-500/10 px-1 rounded">ollama pull {settings.ollamaModel}</code></p>
+                        <div className="rounded-xl bg-red-500/10 border border-red-500/20 px-3 py-2.5 text-xs text-red-400 space-y-1.5">
+                          <p className="font-medium">Server non raggiungibile</p>
+                          <p className="text-red-400/80 font-medium mt-1">Android Agent (GemCode):</p>
+                          <p className="text-red-400/70">1. Installa e avvia l'app GemCode su Android</p>
+                          <p className="text-red-400/70">2. Scarica un modello Gemma nell'app</p>
+                          <p className="text-red-400/70">3. Imposta l'host sull'IP del dispositivo:</p>
+                          <p className="text-red-400/70 font-mono bg-red-500/10 px-1.5 py-0.5 rounded">http://&lt;IP-Android&gt;:8080</p>
+                          <p className="text-red-400/80 font-medium mt-1">Oppure Ollama locale:</p>
+                          <p className="text-red-400/70 font-mono bg-red-500/10 px-1.5 py-0.5 rounded">ollama serve</p>
+                          <p className="text-red-400/70 font-mono bg-red-500/10 px-1.5 py-0.5 rounded">ollama pull {settings.ollamaModel}</p>
                         </div>
                       )}
                     </div>

@@ -162,6 +162,11 @@ dependencies {
     // ── Networking (per GeminiApiLlmInference e MCPTool) ────────────────────
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
+    // ── NanoHTTPD — server HTTP locale per il web frontend ───────────────────
+    // InferenceHttpServer espone POST /api/chat (Ollama-compatible) su porta 8080
+    // così il browser può chiamare Gemma 4 senza nessuna API cloud.
+    implementation("org.nanohttpd:nanohttpd:2.3.1")
+
     // ── Debug tools ──────────────────────────────────────────────────────────
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
