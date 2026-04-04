@@ -3,23 +3,18 @@
     package="com.example.agent">
 
     <!-- ====================================================================== -->
-    <!-- FOREGROUND SERVICE — required to keep the agent alive                  -->
+    <!-- FOREGROUND SERVICE — necessario per tenere l'agente in vita             -->
     <!-- ====================================================================== -->
-
-    <!-- Base permission — required on all API levels for startForeground() -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-
     <!--
-        Android 14 (API 34) enforcement: apps targeting API 34+ MUST declare
-        the exact foreground service type they use via a typed permission.
-
-        Our agent runs local LLM inference — no standard type (location, camera,
-        microphone, health, etc.) applies. We therefore use FOREGROUND_SERVICE_SPECIAL_USE.
-
-        The <property> element below (inside <application>) provides the mandatory
-        sub-type justification string for Play Store review.
+        Android 14 (API 34): obbligatorio dichiarare il tipo specifico.
+        Il nostro servizio esegue inferenza LLM locale — nessun tipo standard
+        si applica, quindi usiamo FOREGROUND_SERVICE_SPECIAL_USE.
     -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+    <!-- POST_NOTIFICATIONS: Android 13+ per mostrare la notifica persistente del servizio -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- ====================================================================== -->
     <!-- PERMISSIONS FOR FileSystemTool                                         -->
@@ -37,7 +32,7 @@
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <!-- ====================================================================== -->
-    <!-- PERMISSIONS FOR SettingsTool (Shizuku)                                 -->
+    <!-- PERMISSIONS FOR SettingsTool / ShizukuCommandExecutor (Shizuku IPC)    -->
     <!-- ====================================================================== -->
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
 
@@ -50,10 +45,8 @@
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.INTERNET" />
 
-    <!-- POST_NOTIFICATIONS required on Android 13+ to show the foreground service notification -->
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-
     <application
+        android:name=".AgentApplication"
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
         android:label="Autonomous Agent"
@@ -64,16 +57,34 @@
 
         <!--
             Android 14+ FOREGROUND_SERVICE_SPECIAL_USE sub-type justification.
-            Required for Play Store submission when using specialUse foreground type.
-            Value is free-form; describe what the service does in plain language.
+            Obbligatorio per la revisione Play Store quando si usa il tipo 'specialUse'.
         -->
         <property
             android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
             android:value="local_llm_inference_gemma" />
 
+        <!--
+            Shizuku ContentProvider — necessario per inizializzare il binder Shizuku.
+            Il provider è registrato da dev.rikka.shizuku:provider e deve essere
+            dichiarato con authorities uguale all'applicationId + ".shizuku".
+        -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:multiprocess="false"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
         <!-- ================================================================== -->
-        <!-- Main Entry Point                                                    -->
+        <!-- Main Entry Point — @AndroidEntryPoint per iniezione Hilt           -->
         <!-- ================================================================== -->
+        <!--
+            NOTA: aggiungere @AndroidEntryPoint a MainActivity per iniettare
+            AgentViewModel tramite hiltViewModel():
+            @AndroidEntryPoint
+            class MainActivity : ComponentActivity() { ... }
+        -->
         <activity
             android:name=".MainActivity"
             android:exported="true">
@@ -90,21 +101,25 @@
             android:exported="false" />
 
         <!-- ================================================================== -->
-        <!-- AgentForegroundService — hosts Gemma in a persistent process       -->
+        <!-- AgentForegroundService — ospita Gemma in un processo persistente   -->
         <!-- ================================================================== -->
         <!--
-            android:foregroundServiceType="specialUse"
-            Tells Android 14+ which typed FGS category we use.
-            Must match the <uses-permission android:name="...FOREGROUND_SERVICE_SPECIAL_USE" /> above.
+            foregroundServiceType="specialUse": corrisponde al permesso
+            FOREGROUND_SERVICE_SPECIAL_USE dichiarato sopra. Obbligatorio su API 34+.
 
-            android:exported="false"
-            Only our own app (MainActivity) can bind to this service.
-            External intents via ACTION_SUBMIT_PROMPT arrive through startService(),
-            NOT through binding — so exported=false is correct and safe.
+            stopWithTask="false": il servizio sopravvive allo swipe dell'Activity,
+            permettendo l'esecuzione in background (es. trigger Tasker notturni).
 
-            android:stopWithTask="false"
-            Keep the service alive even when the user swipes the task away,
-            so background agent execution (e.g. a scheduled Tasker task) continues.
+            exported="false": solo il nostro processo può bindare il servizio.
+            I trigger esterni (Tasker) usano startService() con ACTION_SUBMIT_PROMPT,
+            non binding — quindi exported=false è corretto e sicuro.
+
+            NOTA: aggiungere @AndroidEntryPoint ad AgentForegroundService per
+            l'iniezione Hilt diretta:
+            @AndroidEntryPoint
+            class AgentForegroundService : Service() {
+                @Inject lateinit var orchestrator: AgentOrchestrator
+            }
         -->
         <service
             android:name=".service.AgentForegroundService"
@@ -113,7 +128,7 @@
             android:stopWithTask="false" />
 
         <!-- ================================================================== -->
-        <!-- Accessibility Service for UIInteractTool                           -->
+        <!-- Accessibility Service per UIInteractTool                           -->
         <!-- ================================================================== -->
         <service
             android:name=".tools.AgentAccessibilityService"
