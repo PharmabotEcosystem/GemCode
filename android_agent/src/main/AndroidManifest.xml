@@ -3,14 +3,26 @@
     package="com.example.agent">
 
     <!-- ====================================================================== -->
+    <!-- FOREGROUND SERVICE — necessario per tenere l'agente in vita             -->
+    <!-- ====================================================================== -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!--
+        Android 14 (API 34): obbligatorio dichiarare il tipo specifico.
+        Il nostro servizio esegue inferenza LLM locale — nessun tipo standard
+        si applica, quindi usiamo FOREGROUND_SERVICE_SPECIAL_USE.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+    <!-- POST_NOTIFICATIONS: Android 13+ per mostrare la notifica persistente del servizio -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- ====================================================================== -->
     <!-- PERMISSIONS FOR FileSystemTool                                         -->
     <!-- ====================================================================== -->
-    <!-- Standard storage permissions for Android 10 (API 29) and below -->
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
-    
-    <!-- Special permission for Android 11+ (API 30+) to bypass Scoped Storage -->
-    <!-- This allows the agent to read/write anywhere on the shared storage -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
 
     <!-- ====================================================================== -->
@@ -20,7 +32,7 @@
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <!-- ====================================================================== -->
-    <!-- PERMISSIONS FOR SettingsTool (Shizuku)                                 -->
+    <!-- PERMISSIONS FOR SettingsTool / ShizukuCommandExecutor (Shizuku IPC)    -->
     <!-- ====================================================================== -->
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
 
@@ -34,6 +46,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
 
     <application
+        android:name=".AgentApplication"
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
         android:label="Autonomous Agent"
@@ -42,7 +55,36 @@
         android:theme="@style/Theme.AgentApp"
         android:requestLegacyExternalStorage="true">
 
-        <!-- Main Entry Point -->
+        <!--
+            Android 14+ FOREGROUND_SERVICE_SPECIAL_USE sub-type justification.
+            Obbligatorio per la revisione Play Store quando si usa il tipo 'specialUse'.
+        -->
+        <property
+            android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+            android:value="local_llm_inference_gemma" />
+
+        <!--
+            Shizuku ContentProvider — necessario per inizializzare il binder Shizuku.
+            Il provider è registrato da dev.rikka.shizuku:provider e deve essere
+            dichiarato con authorities uguale all'applicationId + ".shizuku".
+        -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:multiprocess="false"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
+        <!-- ================================================================== -->
+        <!-- Main Entry Point — @AndroidEntryPoint per iniezione Hilt           -->
+        <!-- ================================================================== -->
+        <!--
+            NOTA: aggiungere @AndroidEntryPoint a MainActivity per iniettare
+            AgentViewModel tramite hiltViewModel():
+            @AndroidEntryPoint
+            class MainActivity : ComponentActivity() { ... }
+        -->
         <activity
             android:name=".MainActivity"
             android:exported="true">
@@ -58,7 +100,36 @@
             android:theme="@android:style/Theme.Translucent.NoTitleBar"
             android:exported="false" />
 
-        <!-- Accessibility Service for UIInteractTool -->
+        <!-- ================================================================== -->
+        <!-- AgentForegroundService — ospita Gemma in un processo persistente   -->
+        <!-- ================================================================== -->
+        <!--
+            foregroundServiceType="specialUse": corrisponde al permesso
+            FOREGROUND_SERVICE_SPECIAL_USE dichiarato sopra. Obbligatorio su API 34+.
+
+            stopWithTask="false": il servizio sopravvive allo swipe dell'Activity,
+            permettendo l'esecuzione in background (es. trigger Tasker notturni).
+
+            exported="false": solo il nostro processo può bindare il servizio.
+            I trigger esterni (Tasker) usano startService() con ACTION_SUBMIT_PROMPT,
+            non binding — quindi exported=false è corretto e sicuro.
+
+            NOTA: aggiungere @AndroidEntryPoint ad AgentForegroundService per
+            l'iniezione Hilt diretta:
+            @AndroidEntryPoint
+            class AgentForegroundService : Service() {
+                @Inject lateinit var orchestrator: AgentOrchestrator
+            }
+        -->
+        <service
+            android:name=".service.AgentForegroundService"
+            android:foregroundServiceType="specialUse"
+            android:exported="false"
+            android:stopWithTask="false" />
+
+        <!-- ================================================================== -->
+        <!-- Accessibility Service per UIInteractTool                           -->
+        <!-- ================================================================== -->
         <service
             android:name=".tools.AgentAccessibilityService"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
