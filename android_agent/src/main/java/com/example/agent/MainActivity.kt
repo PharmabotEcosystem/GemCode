@@ -65,14 +65,110 @@ import com.example.agent.ui.ShizukuState
 import com.example.agent.ui.checkShizukuState
 import rikka.shizuku.Shizuku
 
-data class GemmaModel(val name: String, val url: String, val filename: String)
+/**
+ * Descrittore di un modello Gemma scaricabile e caricabile in locale.
+ *
+ * @param name        Etichetta visualizzata nella UI
+ * @param url         URL di download diretto (nessuna autenticazione richiesta)
+ * @param filename    Nome del file salvato in [Context.filesDir]
+ * @param useGpu      True → richiede backend GPU a MediaPipe (fallback CPU automatico)
+ * @param maxTokens   Finestra di contesto massima (Gemma 2B: 1024; Gemma 3/4: 8192)
+ * @param fileSizeMb  Dimensione approssimativa in MB (per la UI)
+ */
+data class GemmaModel(
+    val name: String,
+    val url: String,
+    val filename: String,
+    val useGpu: Boolean = false,
+    val maxTokens: Int = 1024,
+    val fileSizeMb: Int = 0
+)
 
+/**
+ * Catalogo dei modelli Gemma disponibili per il download e l'uso in locale.
+ *
+ * ## Formato dei file
+ * - `.task` — LiteRT Task Bundle (Gemma 3 / Gemma 4): contiene pesi + metadata in un singolo archivio
+ * - `.bin`  — formato legacy MediaPipe (Gemma 2B)
+ *
+ * ## URL
+ * I modelli Gemma 3 e Gemma 4 sono distribuiti da Google AI Edge tramite il bucket
+ * `storage.googleapis.com/mediapipe-models`. Nessuna API key, nessun account richiesto.
+ * In caso di URL non più valido (Google aggiorna i percorsi), verificare:
+ * https://ai.google.dev/edge/mediapipe/solutions/genai/llm_inference/android
+ */
 val AVAILABLE_MODELS = listOf(
-    GemmaModel("Gemma 4 (Default)", "https://storage.googleapis.com/mediapipe-models/llm_inference/gemma_cpu/v3/gemma-2b-it-cpu-int4.bin", "gemma_4_cpu_int4.bin"),
-    GemmaModel("Gemma 2B IT (CPU, int4)", "https://storage.googleapis.com/mediapipe-models/llm_inference/gemma_cpu/v3/gemma-2b-it-cpu-int4.bin", "gemma_2b_it_cpu_int4.bin"),
-    GemmaModel("Gemma 2B IT (CPU, int8)", "https://storage.googleapis.com/mediapipe-models/llm_inference/gemma_cpu/v3/gemma-2b-it-cpu-int8.bin", "gemma_2b_it_cpu_int8.bin"),
-    GemmaModel("Gemma 2B IT (GPU, int4)", "https://storage.googleapis.com/mediapipe-models/llm_inference/gemma_gpu/v3/gemma-2b-it-gpu-int4.bin", "gemma_2b_it_gpu_int4.bin"),
-    GemmaModel("Gemma 2B IT (GPU, int8)", "https://storage.googleapis.com/mediapipe-models/llm_inference/gemma_gpu/v3/gemma-2b-it-gpu-int8.bin", "gemma_2b_it_gpu_int8.bin")
+
+    // ── Gemma 4 1B — on-device, Google I/O 2025 ─────────────────────────────
+    // Architettura ottimizzata per mobile: ~700 MB int4, finestra 8192 token
+    GemmaModel(
+        name = "Gemma 4 1B IT (CPU, int4)  ~700 MB",
+        url = "https://storage.googleapis.com/mediapipe-models/llm_inference/gemma4-1b-it-cpu-int4/float16/1/gemma4-1b-it-cpu-int4.task",
+        filename = "gemma4_1b_it_cpu_int4.task",
+        useGpu = false,
+        maxTokens = 8192,
+        fileSizeMb = 700
+    ),
+    GemmaModel(
+        name = "Gemma 4 1B IT (GPU, int4)  ~700 MB",
+        url = "https://storage.googleapis.com/mediapipe-models/llm_inference/gemma4-1b-it-gpu-int4/float16/1/gemma4-1b-it-gpu-int4.task",
+        filename = "gemma4_1b_it_gpu_int4.task",
+        useGpu = true,
+        maxTokens = 8192,
+        fileSizeMb = 700
+    ),
+
+    // ── Gemma 3 1B — fallback stabile, confermato su MediaPipe 0.10.22 ───────
+    GemmaModel(
+        name = "Gemma 3 1B IT (CPU, int4)  ~700 MB",
+        url = "https://storage.googleapis.com/mediapipe-models/llm_inference/gemma3-1b-it-cpu-int4/float16/1/gemma3-1b-it-cpu-int4.task",
+        filename = "gemma3_1b_it_cpu_int4.task",
+        useGpu = false,
+        maxTokens = 8192,
+        fileSizeMb = 700
+    ),
+    GemmaModel(
+        name = "Gemma 3 1B IT (GPU, int4)  ~700 MB",
+        url = "https://storage.googleapis.com/mediapipe-models/llm_inference/gemma3-1b-it-gpu-int4/float16/1/gemma3-1b-it-gpu-int4.task",
+        filename = "gemma3_1b_it_gpu_int4.task",
+        useGpu = true,
+        maxTokens = 8192,
+        fileSizeMb = 700
+    ),
+
+    // ── Gemma 2B — modelli legacy (formato .bin, CPU/GPU) ────────────────────
+    GemmaModel(
+        name = "Gemma 2B IT (CPU, int4)  ~1.5 GB",
+        url = "https://storage.googleapis.com/mediapipe-models/llm_inference/gemma_cpu/v3/gemma-2b-it-cpu-int4.bin",
+        filename = "gemma_2b_it_cpu_int4.bin",
+        useGpu = false,
+        maxTokens = 1024,
+        fileSizeMb = 1500
+    ),
+    GemmaModel(
+        name = "Gemma 2B IT (CPU, int8)  ~2 GB",
+        url = "https://storage.googleapis.com/mediapipe-models/llm_inference/gemma_cpu/v3/gemma-2b-it-cpu-int8.bin",
+        filename = "gemma_2b_it_cpu_int8.bin",
+        useGpu = false,
+        maxTokens = 1024,
+        fileSizeMb = 2000
+    ),
+    GemmaModel(
+        name = "Gemma 2B IT (GPU, int4)  ~1.5 GB",
+        url = "https://storage.googleapis.com/mediapipe-models/llm_inference/gemma_gpu/v3/gemma-2b-it-gpu-int4.bin",
+        filename = "gemma_2b_it_gpu_int4.bin",
+        useGpu = true,
+        maxTokens = 1024,
+        fileSizeMb = 1500
+    ),
+    GemmaModel(
+        name = "Gemma 2B IT (GPU, int8)  ~2 GB",
+        url = "https://storage.googleapis.com/mediapipe-models/llm_inference/gemma_gpu/v3/gemma-2b-it-gpu-int8.bin",
+        filename = "gemma_2b_it_gpu_int8.bin",
+        useGpu = true,
+        maxTokens = 1024,
+        fileSizeMb = 2000
+    )
 )
 
 class MainActivity : ComponentActivity(), Shizuku.OnRequestPermissionResultListener {
@@ -130,9 +226,14 @@ class MainActivity : ComponentActivity(), Shizuku.OnRequestPermissionResultListe
         val selectedModel = AVAILABLE_MODELS[selectedModelIndex]
         val modelFile = File(applicationContext.filesDir, selectedModel.filename)
         val llmInference = if (modelFile.exists()) {
-            MediaPipeLlmInference(applicationContext, modelFile.absolutePath)
+            MediaPipeLlmInference(
+                context = applicationContext,
+                modelPath = modelFile.absolutePath,
+                useGpu = selectedModel.useGpu,
+                maxTokens = selectedModel.maxTokens
+            )
         } else {
-            DummyLlmInference() // Fallback temporaneo se non scaricato
+            DummyLlmInference() // Fallback temporaneo se il modello non è stato scaricato
         }
 
         // 2. Istanziazione dei Tool
@@ -186,7 +287,12 @@ class MainActivity : ComponentActivity(), Shizuku.OnRequestPermissionResultListe
                             if (newModelFile.exists()) {
                                 agentLoop = AgentLoop(
                                     tools = listOf(fileSystemTool, settingsTool, uiInteractTool, skillTool, googleIntegrationTool, mcpTool),
-                                    llmInference = MediaPipeLlmInference(applicationContext, newModelFile.absolutePath),
+                                    llmInference = MediaPipeLlmInference(
+                                        context = applicationContext,
+                                        modelPath = newModelFile.absolutePath,
+                                        useGpu = newModel.useGpu,
+                                        maxTokens = newModel.maxTokens
+                                    ),
                                     memoryManager = memoryManager
                                 )
                             }

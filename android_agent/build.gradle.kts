@@ -135,7 +135,8 @@ dependencies {
     // ── MediaPipe LLM Inference ───────────────────────────────────────────────
     // mmap del modello gestito internamente da LiteRT via setModelPath().
     // Non usare mai ByteArray per caricare i pesi — vedere ResourceManager.
-    implementation("com.google.mediapipe:tasks-genai:0.10.14")
+    // 0.10.22+: supporto .task format (Gemma 3 / Gemma 4), Backend.GPU enum, finestra 8192 token
+    implementation("com.google.mediapipe:tasks-genai:0.10.22")
 
     // ── Room (VectorMemoryDB) ────────────────────────────────────────────────
     // KSP genera i DAO implementation a compile time — zero reflection a runtime.
