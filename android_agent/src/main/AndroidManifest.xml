@@ -3,14 +3,31 @@
     package="com.example.agent">
 
     <!-- ====================================================================== -->
+    <!-- FOREGROUND SERVICE — required to keep the agent alive                  -->
+    <!-- ====================================================================== -->
+
+    <!-- Base permission — required on all API levels for startForeground() -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+
+    <!--
+        Android 14 (API 34) enforcement: apps targeting API 34+ MUST declare
+        the exact foreground service type they use via a typed permission.
+
+        Our agent runs local LLM inference — no standard type (location, camera,
+        microphone, health, etc.) applies. We therefore use FOREGROUND_SERVICE_SPECIAL_USE.
+
+        The <property> element below (inside <application>) provides the mandatory
+        sub-type justification string for Play Store review.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+    <!-- ====================================================================== -->
     <!-- PERMISSIONS FOR FileSystemTool                                         -->
     <!-- ====================================================================== -->
-    <!-- Standard storage permissions for Android 10 (API 29) and below -->
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
-    
-    <!-- Special permission for Android 11+ (API 30+) to bypass Scoped Storage -->
-    <!-- This allows the agent to read/write anywhere on the shared storage -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
 
     <!-- ====================================================================== -->
@@ -33,6 +50,9 @@
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- POST_NOTIFICATIONS required on Android 13+ to show the foreground service notification -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
@@ -42,7 +62,18 @@
         android:theme="@style/Theme.AgentApp"
         android:requestLegacyExternalStorage="true">
 
-        <!-- Main Entry Point -->
+        <!--
+            Android 14+ FOREGROUND_SERVICE_SPECIAL_USE sub-type justification.
+            Required for Play Store submission when using specialUse foreground type.
+            Value is free-form; describe what the service does in plain language.
+        -->
+        <property
+            android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+            android:value="local_llm_inference_gemma" />
+
+        <!-- ================================================================== -->
+        <!-- Main Entry Point                                                    -->
+        <!-- ================================================================== -->
         <activity
             android:name=".MainActivity"
             android:exported="true">
@@ -58,7 +89,32 @@
             android:theme="@android:style/Theme.Translucent.NoTitleBar"
             android:exported="false" />
 
-        <!-- Accessibility Service for UIInteractTool -->
+        <!-- ================================================================== -->
+        <!-- AgentForegroundService — hosts Gemma in a persistent process       -->
+        <!-- ================================================================== -->
+        <!--
+            android:foregroundServiceType="specialUse"
+            Tells Android 14+ which typed FGS category we use.
+            Must match the <uses-permission android:name="...FOREGROUND_SERVICE_SPECIAL_USE" /> above.
+
+            android:exported="false"
+            Only our own app (MainActivity) can bind to this service.
+            External intents via ACTION_SUBMIT_PROMPT arrive through startService(),
+            NOT through binding — so exported=false is correct and safe.
+
+            android:stopWithTask="false"
+            Keep the service alive even when the user swipes the task away,
+            so background agent execution (e.g. a scheduled Tasker task) continues.
+        -->
+        <service
+            android:name=".service.AgentForegroundService"
+            android:foregroundServiceType="specialUse"
+            android:exported="false"
+            android:stopWithTask="false" />
+
+        <!-- ================================================================== -->
+        <!-- Accessibility Service for UIInteractTool                           -->
+        <!-- ================================================================== -->
         <service
             android:name=".tools.AgentAccessibilityService"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
