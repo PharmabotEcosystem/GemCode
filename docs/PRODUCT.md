@@ -2,7 +2,7 @@
 
 ## Overview
 
-GemCode is a dual-stack AI project that combines a **production-grade autonomous Android agent** with a **React web UI**. The Android agent runs a full ReAct (Reasoning and Acting) loop entirely on-device using Google's Gemma LLM via MediaPipe, with no mandatory cloud dependency. The web frontend is a TypeScript/React application deployed on Google AI Studio.
+GemCode is a dual-stack AI platform that combines a **Gemini-powered web chat interface** with a **production-grade autonomous Android agent**. The Android agent runs a full ReAct (Reasoning and Acting) loop entirely on-device using Google's Gemma 4 LLM via LiteRT-LM, with no mandatory cloud dependency. The web frontend is a TypeScript/React chat application with streaming, settings panel, and conversation history.
 
 ---
 
@@ -13,7 +13,7 @@ GemCode is a dual-stack AI project that combines a **production-grade autonomous
 A self-contained AI agent that reasons, plans, and executes actions on an Android device using a local large language model.
 
 **Key capabilities:**
-- On-device LLM inference (Gemma 2B / 4) — zero data leaves the device by default
+- On-device LLM inference (Gemma 4 E2B / E4B via LiteRT-LM) — zero data leaves the device by default
 - Multi-step ReAct loop: think → act → observe → repeat (up to 5 iterations per request)
 - Persistent memory with vector similarity search (Room + cosine similarity)
 - Tool execution: filesystem, system settings, UI automation, Google Calendar/Mail, MCP servers
@@ -24,7 +24,7 @@ A self-contained AI agent that reasons, plans, and executes actions on an Androi
 
 ### 2. Web Frontend
 
-A dark-themed React/TypeScript UI deployed on Google AI Studio, backed by the Gemini 2.5-flash API.
+A Gemini-inspired React/TypeScript chat UI backed by the Gemini API with streaming support.
 
 ---
 
@@ -196,30 +196,30 @@ sealed interface CommandOutput {
 
 ## Supported Models
 
-| Model | Backend | Quantization | RAM Required |
-|-------|---------|--------------|-------------|
-| Gemma 4 (default) | MediaPipe / Gemini API | varies | ~4 GB |
-| Gemma 2B | CPU | int4 | ~1.8 GB |
-| Gemma 2B | CPU | int8 | ~2.4 GB |
-| Gemma 2B | GPU | int4 | ~1.8 GB |
-| Gemma 2B | GPU | int8 | ~2.4 GB |
+| Model | Engine | Format | RAM Required | Download |
+|-------|--------|--------|-------------|---------|
+| Gemma 4 E2B IT (CPU/GPU) | LiteRT-LM 0.10.0 | `.litertlm` | ~4 GB | HuggingFace `litert-community` |
+| Gemma 4 E4B IT (CPU/GPU) | LiteRT-LM 0.10.0 | `.litertlm` | ~6 GB | HuggingFace `litert-community` |
+| Gemma 3 1B IT (CPU/GPU) | MediaPipe 0.10.22 | `.task` | ~2 GB | `storage.googleapis.com` |
+| Gemma 2B IT (CPU/GPU) | MediaPipe 0.10.22 | `.bin` | ~1.8–2.4 GB | `storage.googleapis.com` |
 
-Models are downloaded at runtime from MediaPipe storage buckets. The `MutableLlmInferenceWrapper` singleton starts as `UninitializedLlmInference` and is swapped to `MediaPipeLlmInference` after `AgentIntent.InitializeModel` completes.
+Models are downloaded directly in-app without authentication. The `createInferenceEngine()` factory selects `LiteRtLmInference` for `.litertlm` files and `MediaPipeLlmInference` for `.task`/`.bin` files automatically.
 
 ---
 
 ## Web Frontend
 
-A React 19 / TypeScript 5.8 UI deployed on Google AI Studio.
+A React 19 / TypeScript 5.8 chat interface inspired by the Gemini app design.
 
-**Theme:** Dark neon crime/street aesthetic  
-**Palette:** `#39ff14` (green) · `#b026ff` (purple) · `#00f3ff` (cyan) · `#ff003c` (red)
+**Theme:** Gemini-inspired dark mode (`#131314` base, `#8ab4f8` Google Blue accent)
 
-**Game elements:**
-- Districts: Cobras, Vipers, Lawless
-- Player stats: health, money, reputation
-- Tabs: street (`strada`), inventory, market, crew
-- Powered by `@google/genai` SDK with Gemini 2.5-flash
+**Features:**
+- Streaming chat with `@google/genai` SDK (Gemini 2.5 Flash / 2.0 Flash / 1.5 Flash)
+- Collapsible sidebar with conversation history
+- Settings panel: model selector, temperature slider, system prompt editor
+- Welcome screen with suggestion chips
+- Copy button on messages, stop-generation button
+- Auto-resizing textarea input (Shift+Enter for newline)
 
 ---
 
@@ -232,7 +232,8 @@ A React 19 / TypeScript 5.8 UI deployed on Google AI Studio.
 | Kotlin | — | Primary language |
 | Jetpack Compose | BOM 2024.09.00 | UI |
 | Hilt | 2.51.1 | Dependency injection |
-| MediaPipe Tasks GenAI | 0.10.14 | On-device Gemma inference |
+| LiteRT-LM | 0.10.0 | On-device Gemma 4 inference (.litertlm) |
+| MediaPipe Tasks GenAI | 0.10.22 | Legacy Gemma 2B/3 inference (.bin/.task) |
 | Room | 2.6.1 | SQLite persistence (WAL) |
 | Shizuku API | 13.1.0 | Privileged ADB bridge |
 | Kotlinx Serialization | 1.6.3 | JSON parsing |

@@ -1,399 +1,664 @@
-import React, { useState, useEffect } from 'react';
-import { 
-  Shield, 
-  Coins, 
-  MapPin, 
-  Clock, 
-  Package, 
-  Activity, 
-  Users, 
-  Skull, 
-  Briefcase, 
-  FlaskConical, 
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import {
+  Sparkles,
+  Plus,
+  Send,
+  Settings,
+  ChevronLeft,
+  ChevronRight,
+  Trash2,
+  X,
   MessageSquare,
-  Crosshair,
-  Home,
-  TrendingUp
+  Cpu,
+  Thermometer,
+  FileText,
+  Info,
+  Moon,
+  Copy,
+  Check,
 } from 'lucide-react';
+import { GoogleGenAI } from '@google/genai';
 import { motion, AnimatePresence } from 'motion/react';
 
-// --- Game Data Models ---
-type District = 'Residenziale (Cobras)' | 'Commerciale (Vipers)' | 'Industriale (Lawless)';
-type TimeOfDay = 'Mattina' | 'Pomeriggio' | 'Sera' | 'Notte';
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-interface PlayerState {
-  health: number;
-  maxHealth: number;
-  money: number;
-  reputation: number;
-  district: District;
-  time: TimeOfDay;
-  career: 'Corriere' | 'Chimico' | 'Negoziatore' | 'Nessuna';
-}
-
-interface InventoryItem {
+interface Message {
   id: string;
-  name: string;
-  quantity: number;
-  type: 'Sostanza' | 'Ingrediente' | 'Arma' | 'Altro';
-}
-
-interface LogEntry {
-  id: number;
+  role: 'user' | 'model';
   text: string;
-  type: 'info' | 'warning' | 'danger' | 'success';
-  timestamp: string;
+  isStreaming?: boolean;
 }
 
-// --- Initial State ---
-const initialPlayer: PlayerState = {
-  health: 100,
-  maxHealth: 100,
-  money: 500,
-  reputation: 10,
-  district: 'Residenziale (Cobras)',
-  time: 'Sera',
-  career: 'Nessuna'
-};
+interface Conversation {
+  id: string;
+  title: string;
+  preview: string;
+  timestamp: Date;
+}
 
-const initialInventory: InventoryItem[] = [
-  { id: '1', name: 'Coltello a serramanico', quantity: 1, type: 'Arma' },
-  { id: '2', name: 'Sostanza Base', quantity: 5, type: 'Ingrediente' },
-  { id: '3', name: 'Kit Medico Clandestino', quantity: 1, type: 'Altro' },
+interface Settings {
+  model: string;
+  temperature: number;
+  systemPrompt: string;
+}
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const MODELS = [
+  { id: 'gemini-2.5-flash-preview-05-20', label: 'Gemini 2.5 Flash', badge: 'Latest' },
+  { id: 'gemini-2.0-flash',               label: 'Gemini 2.0 Flash', badge: null },
+  { id: 'gemini-1.5-flash',               label: 'Gemini 1.5 Flash', badge: null },
 ];
 
+const DEFAULT_SETTINGS: Settings = {
+  model: 'gemini-2.5-flash-preview-05-20',
+  temperature: 0.7,
+  systemPrompt:
+    'Sei GemCode Assistant, un assistente AI utile, preciso e conciso. ' +
+    'Rispondi sempre in modo chiaro e diretto. ' +
+    'Se non conosci qualcosa, dillo esplicitamente senza inventare.',
+};
+
+const SUGGESTION_CHIPS = [
+  'Spiega come funziona un Transformer',
+  'Scrivi un\'API REST in Kotlin con Ktor',
+  'Cos\'è il pattern ReAct negli agenti AI?',
+  'Crea uno script Python per analizzare un CSV',
+];
+
+// ─── Gemini API ───────────────────────────────────────────────────────────────
+
+function buildContents(messages: Message[]) {
+  return messages.map(m => ({
+    role: m.role,
+    parts: [{ text: m.text }],
+  }));
+}
+
+// ─── App ──────────────────────────────────────────────────────────────────────
+
 export default function App() {
-  const [player, setPlayer] = useState<PlayerState>(initialPlayer);
-  const [inventory, setInventory] = useState<InventoryItem[]>(initialInventory);
-  const [logs, setLogs] = useState<LogEntry[]>([
-    { id: 1, text: "Benvenuto nelle strade. Non fidarti di nessuno.", type: 'warning', timestamp: "20:00" }
-  ]);
-  const [activeTab, setActiveTab] = useState<'strada' | 'inventario' | 'mercato' | 'crew'>('strada');
+  const [messages, setMessages]           = useState<Message[]>([]);
+  const [input, setInput]                 = useState('');
+  const [isLoading, setIsLoading]         = useState(false);
+  const [sidebarOpen, setSidebarOpen]     = useState(true);
+  const [settingsOpen, setSettingsOpen]   = useState(false);
+  const [settings, setSettings]           = useState<Settings>(DEFAULT_SETTINGS);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [activeConvId, setActiveConvId]   = useState<string | null>(null);
+  const [error, setError]                 = useState<string | null>(null);
 
-  const addLog = (text: string, type: LogEntry['type'] = 'info') => {
-    const now = new Date();
-    const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
-    setLogs(prev => [{ id: Date.now(), text, type, timestamp: timeStr }, ...prev].slice(0, 50));
+  const messagesEndRef  = useRef<HTMLDivElement>(null);
+  const inputRef        = useRef<HTMLTextAreaElement>(null);
+  const abortRef        = useRef<boolean>(false);
+
+  // Scroll al fondo quando arrivano nuovi messaggi
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  // Auto-resize textarea
+  const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setInput(e.target.value);
+    e.target.style.height = 'auto';
+    e.target.style.height = `${Math.min(e.target.scrollHeight, 200)}px`;
   };
 
-  const handleMove = () => {
-    const districts: District[] = ['Residenziale (Cobras)', 'Commerciale (Vipers)', 'Industriale (Lawless)'];
-    const nextDistrict = districts[(districts.indexOf(player.district) + 1) % districts.length];
-    setPlayer(prev => ({ ...prev, district: nextDistrict }));
-    addLog(`Ti sei spostato nel distretto: ${nextDistrict}`, 'info');
-  };
+  const newChat = useCallback(() => {
+    if (messages.length > 0) {
+      const conv: Conversation = {
+        id: Date.now().toString(),
+        title: messages[0]?.text.slice(0, 40) || 'Nuova conversazione',
+        preview: messages[messages.length - 1]?.text.slice(0, 60) || '',
+        timestamp: new Date(),
+      };
+      setConversations(prev => [conv, ...prev.slice(0, 19)]);
+    }
+    setMessages([]);
+    setActiveConvId(null);
+    setError(null);
+    setTimeout(() => inputRef.current?.focus(), 100);
+  }, [messages]);
 
-  const handleScavenge = () => {
-    const found = Math.random() > 0.5;
-    if (found) {
-      const amount = Math.floor(Math.random() * 50) + 10;
-      setPlayer(prev => ({ ...prev, money: prev.money + amount }));
-      addLog(`Hai trovato ${amount} crediti frugando in un vicolo.`, 'success');
-    } else {
-      const damage = Math.floor(Math.random() * 15) + 5;
-      setPlayer(prev => ({ ...prev, health: Math.max(0, prev.health - damage) }));
-      addLog(`Un tossico ti ha aggredito! Hai perso ${damage} HP.`, 'danger');
+  const sendMessage = useCallback(async (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed || isLoading) return;
+
+    setError(null);
+    setInput('');
+    if (inputRef.current) {
+      inputRef.current.style.height = 'auto';
+    }
+
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      setError('GEMINI_API_KEY non configurata. Aggiungila al file .env.');
+      return;
+    }
+
+    const userMsg: Message = {
+      id: `user-${Date.now()}`,
+      role: 'user',
+      text: trimmed,
+    };
+
+    const modelMsgId = `model-${Date.now()}`;
+    const modelMsg: Message = {
+      id: modelMsgId,
+      role: 'model',
+      text: '',
+      isStreaming: true,
+    };
+
+    setMessages(prev => [...prev, userMsg, modelMsg]);
+    setIsLoading(true);
+    abortRef.current = false;
+
+    try {
+      const ai = new GoogleGenAI({ apiKey });
+      const history = buildContents([...messages, userMsg]);
+
+      const stream = await ai.models.generateContentStream({
+        model: settings.model,
+        contents: history,
+        config: {
+          temperature: settings.temperature,
+          systemInstruction: settings.systemPrompt,
+        },
+      });
+
+      let accumulated = '';
+      for await (const chunk of stream) {
+        if (abortRef.current) break;
+        const chunkText = chunk.text ?? '';
+        accumulated += chunkText;
+        setMessages(prev =>
+          prev.map(m =>
+            m.id === modelMsgId ? { ...m, text: accumulated } : m
+          )
+        );
+      }
+
+      setMessages(prev =>
+        prev.map(m =>
+          m.id === modelMsgId ? { ...m, isStreaming: false } : m
+        )
+      );
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Errore sconosciuto';
+      setMessages(prev => prev.filter(m => m.id !== modelMsgId));
+      setError(`Errore: ${message}`);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [isLoading, messages, settings]);
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage(input);
     }
   };
 
+  const stopGeneration = () => {
+    abortRef.current = true;
+    setIsLoading(false);
+    setMessages(prev =>
+      prev.map(m => m.isStreaming ? { ...m, isStreaming: false } : m)
+    );
+  };
+
   return (
-    <div className="min-h-screen bg-dark-bg text-gray-300 font-sans flex flex-col overflow-hidden selection:bg-neon-purple selection:text-white">
-      {/* Top Bar - Player Stats */}
-      <header className="bg-dark-surface border-b border-dark-border p-4 flex flex-wrap items-center justify-between gap-4 shrink-0 z-10 shadow-md">
-        <div className="flex items-center gap-6 overflow-x-auto pb-2 sm:pb-0 w-full sm:w-auto hide-scrollbar">
-          <div className="flex items-center gap-2">
-            <Activity className="w-5 h-5 text-neon-red" />
-            <div className="flex flex-col">
-              <span className="text-xs text-gray-500 uppercase tracking-wider font-mono">Salute</span>
-              <span className="font-display font-bold text-white">{player.health}/{player.maxHealth}</span>
+    <div className="flex h-screen bg-base text-primary overflow-hidden">
+
+      {/* ── Sidebar ─────────────────────────────────────────────────────────── */}
+      <AnimatePresence initial={false}>
+        {sidebarOpen && (
+          <motion.aside
+            key="sidebar"
+            initial={{ width: 0, opacity: 0 }}
+            animate={{ width: 260, opacity: 1 }}
+            exit={{ width: 0, opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="flex flex-col bg-surface border-r border-border overflow-hidden shrink-0"
+          >
+            {/* Logo */}
+            <div className="flex items-center gap-3 px-4 py-5 border-b border-border">
+              <GemcodeLogo />
+              <span className="font-semibold text-primary text-base tracking-tight">GemCode</span>
             </div>
-          </div>
-          
-          <div className="flex items-center gap-2">
-            <Coins className="w-5 h-5 text-yellow-500" />
-            <div className="flex flex-col">
-              <span className="text-xs text-gray-500 uppercase tracking-wider font-mono">Crediti</span>
-              <span className="font-display font-bold text-white">¤{player.money}</span>
+
+            {/* New Chat */}
+            <div className="px-3 py-3">
+              <button
+                onClick={newChat}
+                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-secondary hover:bg-elevated hover:text-primary transition-colors"
+              >
+                <Plus className="w-4 h-4 shrink-0" />
+                Nuova chat
+              </button>
             </div>
-          </div>
 
-          <div className="flex items-center gap-2">
-            <Shield className="w-5 h-5 text-neon-blue" />
-            <div className="flex flex-col">
-              <span className="text-xs text-gray-500 uppercase tracking-wider font-mono">Reputazione</span>
-              <span className="font-display font-bold text-white">{player.reputation}</span>
-            </div>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-6">
-          <div className="flex items-center gap-2 bg-dark-bg px-3 py-1.5 rounded-md border border-dark-border">
-            <MapPin className="w-4 h-4 text-neon-green" />
-            <span className="text-sm font-medium text-gray-200">{player.district}</span>
-          </div>
-          <div className="flex items-center gap-2 bg-dark-bg px-3 py-1.5 rounded-md border border-dark-border">
-            <Clock className="w-4 h-4 text-gray-400" />
-            <span className="text-sm font-medium text-gray-200">{player.time}</span>
-          </div>
-        </div>
-      </header>
-
-      {/* Main Content Area */}
-      <main className="flex-1 flex flex-col lg:flex-row overflow-hidden">
-        
-        {/* Left Sidebar - Navigation & Quick Actions */}
-        <aside className="w-full lg:w-64 bg-dark-surface border-r border-dark-border flex flex-col shrink-0">
-          <div className="p-4 border-b border-dark-border">
-            <h2 className="text-xs uppercase tracking-widest text-gray-500 font-mono mb-4">Terminale</h2>
-            <nav className="flex lg:flex-col gap-2 overflow-x-auto lg:overflow-visible pb-2 lg:pb-0">
-              <NavButton 
-                active={activeTab === 'strada'} 
-                onClick={() => setActiveTab('strada')} 
-                icon={<Crosshair className="w-4 h-4" />} 
-                label="La Strada" 
-              />
-              <NavButton 
-                active={activeTab === 'inventario'} 
-                onClick={() => setActiveTab('inventario')} 
-                icon={<Package className="w-4 h-4" />} 
-                label="Inventario" 
-              />
-              <NavButton 
-                active={activeTab === 'mercato'} 
-                onClick={() => setActiveTab('mercato')} 
-                icon={<TrendingUp className="w-4 h-4" />} 
-                label="Mercato Nero" 
-              />
-              <NavButton 
-                active={activeTab === 'crew'} 
-                onClick={() => setActiveTab('crew')} 
-                icon={<Users className="w-4 h-4" />} 
-                label="La tua Crew" 
-              />
-            </nav>
-          </div>
-          
-          <div className="p-4 flex-1 hidden lg:block">
-            <h2 className="text-xs uppercase tracking-widest text-gray-500 font-mono mb-4">Status</h2>
-            <div className="space-y-4">
-              <div>
-                <div className="flex justify-between text-xs mb-1">
-                  <span className="text-gray-400">Carriera</span>
-                  <span className="text-neon-purple font-medium">{player.career}</span>
-                </div>
-                <div className="h-1.5 w-full bg-dark-bg rounded-full overflow-hidden">
-                  <div className="h-full bg-neon-purple w-0"></div>
-                </div>
-              </div>
-              <div>
-                <div className="flex justify-between text-xs mb-1">
-                  <span className="text-gray-400">Ricercato</span>
-                  <span className="text-gray-300">Basso</span>
-                </div>
-                <div className="h-1.5 w-full bg-dark-bg rounded-full overflow-hidden">
-                  <div className="h-full bg-neon-red w-1/4"></div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </aside>
-
-        {/* Center - Dynamic Content */}
-        <section className="flex-1 flex flex-col bg-dark-bg relative overflow-hidden">
-          {/* Content Area */}
-          <div className="flex-1 overflow-y-auto p-4 lg:p-8">
-            <AnimatePresence mode="wait">
-              {activeTab === 'strada' && (
-                <motion.div 
-                  key="strada"
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -10 }}
-                  className="max-w-3xl mx-auto space-y-8"
-                >
-                  <div className="bg-dark-surface border border-dark-border rounded-lg p-6 relative overflow-hidden">
-                    <div className="absolute top-0 left-0 w-1 h-full bg-neon-green"></div>
-                    <h2 className="text-2xl font-display font-bold text-white mb-2">{player.district}</h2>
-                    <p className="text-gray-400 leading-relaxed">
-                      Le strade sono sporche e illuminate a intermittenza dai neon sfarfallanti. 
-                      Senti il rumore di sirene in lontananza. Qualcuno ti osserva da un vicolo.
-                    </p>
-                    
-                    <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      <ActionButton 
-                        icon={<MapPin className="w-5 h-5" />} 
-                        label="Spostati in un altro distretto" 
-                        onClick={handleMove}
-                      />
-                      <ActionButton 
-                        icon={<Activity className="w-5 h-5" />} 
-                        label="Cerca risorse nei vicoli" 
-                        onClick={handleScavenge}
-                      />
-                      <ActionButton 
-                        icon={<FlaskConical className="w-5 h-5" />} 
-                        label="Cerca un laboratorio" 
-                        onClick={() => addLog("Non hai ancora trovato un laboratorio sicuro.", "warning")}
-                      />
-                      <ActionButton 
-                        icon={<Home className="w-5 h-5" />} 
-                        label="Torna al rifugio" 
-                        onClick={() => addLog("Non possiedi ancora un rifugio.", "warning")}
-                      />
-                    </div>
-                  </div>
-
-                  {/* Nearby NPCs / Events */}
-                  <div>
-                    <h3 className="text-sm font-mono text-gray-500 uppercase tracking-widest mb-4">Eventi Locali</h3>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div className="bg-dark-surface border border-dark-border rounded-lg p-4 flex items-start gap-4 hover:border-gray-600 transition-colors cursor-pointer">
-                        <div className="p-2 bg-dark-bg rounded-md text-neon-blue">
-                          <MessageSquare className="w-5 h-5" />
-                        </div>
-                        <div>
-                          <h4 className="font-medium text-gray-200">Spacciatore Nervoso</h4>
-                          <p className="text-sm text-gray-500 mt-1">Cerca qualcuno per piazzare della roba velocemente.</p>
-                        </div>
-                      </div>
-                      <div className="bg-dark-surface border border-dark-border rounded-lg p-4 flex items-start gap-4 hover:border-gray-600 transition-colors cursor-pointer">
-                        <div className="p-2 bg-dark-bg rounded-md text-neon-red">
-                          <Skull className="w-5 h-5" />
-                        </div>
-                        <div>
-                          <h4 className="font-medium text-gray-200">Pattuglia Corrotta</h4>
-                          <p className="text-sm text-gray-500 mt-1">Stanno fermando chiunque sembri sospetto.</p>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </motion.div>
+            {/* Conversation history */}
+            <div className="flex-1 overflow-y-auto px-3 pb-3 space-y-0.5">
+              {conversations.length > 0 && (
+                <p className="px-3 py-2 text-xs font-medium text-muted uppercase tracking-wider">
+                  Recenti
+                </p>
               )}
-
-              {activeTab === 'inventario' && (
-                <motion.div 
-                  key="inventario"
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -10 }}
-                  className="max-w-3xl mx-auto"
+              {conversations.map(conv => (
+                <button
+                  key={conv.id}
+                  onClick={() => setActiveConvId(conv.id)}
+                  className={`w-full text-left px-3 py-2.5 rounded-xl text-sm transition-colors group ${
+                    activeConvId === conv.id
+                      ? 'bg-elevated text-primary'
+                      : 'text-secondary hover:bg-elevated/60 hover:text-primary'
+                  }`}
                 >
-                  <h2 className="text-2xl font-display font-bold text-white mb-6">Il tuo Zaino</h2>
-                  <div className="bg-dark-surface border border-dark-border rounded-lg overflow-hidden">
-                    <table className="w-full text-left text-sm">
-                      <thead className="bg-dark-bg border-b border-dark-border text-gray-500 font-mono uppercase text-xs">
-                        <tr>
-                          <th className="px-4 py-3 font-medium">Oggetto</th>
-                          <th className="px-4 py-3 font-medium">Tipo</th>
-                          <th className="px-4 py-3 font-medium text-right">Q.tà</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-dark-border">
-                        {inventory.map(item => (
-                          <tr key={item.id} className="hover:bg-dark-bg/50 transition-colors">
-                            <td className="px-4 py-3 font-medium text-gray-200">{item.name}</td>
-                            <td className="px-4 py-3 text-gray-500">{item.type}</td>
-                            <td className="px-4 py-3 text-right font-mono text-neon-blue">{item.quantity}</td>
-                          </tr>
-                        ))}
-                        {inventory.length === 0 && (
-                          <tr>
-                            <td colSpan={3} className="px-4 py-8 text-center text-gray-500">
-                              Inventario vuoto.
-                            </td>
-                          </tr>
-                        )}
-                      </tbody>
-                    </table>
+                  <div className="flex items-start gap-2">
+                    <MessageSquare className="w-3.5 h-3.5 mt-0.5 shrink-0 text-muted" />
+                    <span className="truncate leading-snug">{conv.title}</span>
                   </div>
-                </motion.div>
+                </button>
+              ))}
+              {conversations.length === 0 && (
+                <p className="px-3 py-4 text-xs text-muted text-center">
+                  Le conversazioni appariranno qui
+                </p>
               )}
-              
-              {/* Other tabs placeholders */}
-              {(activeTab === 'mercato' || activeTab === 'crew') && (
-                <motion.div 
-                  key="placeholder"
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -10 }}
-                  className="max-w-3xl mx-auto flex flex-col items-center justify-center py-20 text-center"
-                >
-                  <Briefcase className="w-12 h-12 text-gray-600 mb-4" />
-                  <h2 className="text-xl font-display font-bold text-gray-400 mb-2">Modulo Offline</h2>
-                  <p className="text-gray-500 max-w-md">
-                    Questa sezione del terminale non è ancora accessibile. Aumenta la tua reputazione per sbloccarla.
-                  </p>
-                </motion.div>
-              )}
-            </AnimatePresence>
+            </div>
+
+            {/* Bottom actions */}
+            <div className="border-t border-border px-3 py-3 space-y-0.5">
+              <button
+                onClick={() => setSettingsOpen(true)}
+                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-secondary hover:bg-elevated hover:text-primary transition-colors"
+              >
+                <Settings className="w-4 h-4 shrink-0" />
+                Impostazioni
+              </button>
+            </div>
+          </motion.aside>
+        )}
+      </AnimatePresence>
+
+      {/* ── Main ────────────────────────────────────────────────────────────── */}
+      <div className="flex-1 flex flex-col min-w-0">
+
+        {/* Top bar */}
+        <header className="flex items-center justify-between px-4 py-3 border-b border-border bg-surface/80 backdrop-blur shrink-0">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setSidebarOpen(v => !v)}
+              className="p-2 rounded-lg text-secondary hover:bg-elevated hover:text-primary transition-colors"
+              aria-label="Toggle sidebar"
+            >
+              {sidebarOpen ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+            </button>
+            {!sidebarOpen && <GemcodeLogo />}
           </div>
 
-          {/* Action Log (Bottom of Center Panel) */}
-          <div className="h-48 bg-dark-surface border-t border-dark-border flex flex-col shrink-0">
-            <div className="px-4 py-2 border-b border-dark-border bg-dark-bg/50 flex justify-between items-center">
-              <span className="text-xs uppercase tracking-widest text-gray-500 font-mono">Log di Sistema</span>
+          {/* Model badge */}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setSettingsOpen(true)}
+              className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-elevated border border-border text-xs font-medium text-secondary hover:text-primary hover:border-accent/50 transition-colors"
+            >
+              <Cpu className="w-3.5 h-3.5" />
+              {MODELS.find(m => m.id === settings.model)?.label ?? settings.model}
+            </button>
+            {messages.length > 0 && (
+              <button
+                onClick={newChat}
+                className="p-2 rounded-lg text-secondary hover:bg-elevated hover:text-primary transition-colors"
+                title="Nuova chat"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+        </header>
+
+        {/* Chat area */}
+        <main className="flex-1 overflow-y-auto">
+          {messages.length === 0 ? (
+            <WelcomeScreen
+              onSuggestion={(s) => sendMessage(s)}
+            />
+          ) : (
+            <div className="max-w-3xl mx-auto px-4 py-8 space-y-6">
+              {messages.map(msg => (
+                <MessageBubble key={msg.id} message={msg} />
+              ))}
+              {error && (
+                <div className="flex items-start gap-3 text-sm text-red-400 bg-red-400/10 border border-red-400/20 rounded-2xl px-4 py-3">
+                  <Info className="w-4 h-4 shrink-0 mt-0.5" />
+                  {error}
+                </div>
+              )}
+              <div ref={messagesEndRef} />
             </div>
-            <div className="flex-1 overflow-y-auto p-4 space-y-2 font-mono text-sm">
-              <AnimatePresence initial={false}>
-                {logs.map((log) => (
-                  <motion.div 
-                    key={log.id}
-                    initial={{ opacity: 0, x: -10 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    className="flex gap-3"
+          )}
+        </main>
+
+        {/* Error (welcome screen) */}
+        {error && messages.length === 0 && (
+          <div className="max-w-3xl mx-auto w-full px-4 pb-2">
+            <div className="flex items-start gap-3 text-sm text-red-400 bg-red-400/10 border border-red-400/20 rounded-2xl px-4 py-3">
+              <Info className="w-4 h-4 shrink-0 mt-0.5" />
+              {error}
+            </div>
+          </div>
+        )}
+
+        {/* Input bar */}
+        <div className="shrink-0 px-4 pb-6 pt-2">
+          <div className="max-w-3xl mx-auto">
+            <div className="relative flex items-end gap-3 bg-elevated border border-border rounded-2xl px-4 py-3 focus-within:border-accent/50 transition-colors shadow-sm">
+              <textarea
+                ref={inputRef}
+                value={input}
+                onChange={handleInputChange}
+                onKeyDown={handleKeyDown}
+                placeholder="Scrivi un messaggio…"
+                rows={1}
+                className="flex-1 bg-transparent resize-none text-sm text-primary placeholder:text-muted focus:outline-none leading-relaxed max-h-48"
+                disabled={isLoading}
+              />
+              <div className="flex items-center gap-2 shrink-0 pb-0.5">
+                {isLoading ? (
+                  <button
+                    onClick={stopGeneration}
+                    className="p-2 rounded-xl bg-accent/10 text-accent hover:bg-accent/20 transition-colors"
+                    title="Interrompi"
                   >
-                    <span className="text-gray-600 shrink-0">[{log.timestamp}]</span>
-                    <span className={`
-                      ${log.type === 'info' ? 'text-gray-300' : ''}
-                      ${log.type === 'warning' ? 'text-yellow-500' : ''}
-                      ${log.type === 'danger' ? 'text-neon-red' : ''}
-                      ${log.type === 'success' ? 'text-neon-green' : ''}
-                    `}>
-                      {log.text}
-                    </span>
-                  </motion.div>
-                ))}
-              </AnimatePresence>
+                    <div className="w-3.5 h-3.5 rounded-sm bg-accent" />
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => sendMessage(input)}
+                    disabled={!input.trim()}
+                    className="p-2 rounded-xl bg-accent text-white hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+                    title="Invia (Enter)"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
             </div>
+            <p className="text-center text-xs text-muted mt-2">
+              GemCode · {MODELS.find(m => m.id === settings.model)?.label} · Shift+Enter per nuova riga
+            </p>
           </div>
-        </section>
-      </main>
+        </div>
+      </div>
+
+      {/* ── Settings Panel ───────────────────────────────────────────────────── */}
+      <AnimatePresence>
+        {settingsOpen && (
+          <>
+            {/* Backdrop */}
+            <motion.div
+              key="backdrop"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 bg-black/40 z-40"
+              onClick={() => setSettingsOpen(false)}
+            />
+            {/* Panel */}
+            <motion.div
+              key="settings-panel"
+              initial={{ x: '100%' }}
+              animate={{ x: 0 }}
+              exit={{ x: '100%' }}
+              transition={{ type: 'spring', damping: 28, stiffness: 300 }}
+              className="fixed right-0 top-0 h-full w-80 bg-surface border-l border-border z-50 flex flex-col shadow-2xl"
+            >
+              <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+                <h2 className="font-semibold text-primary">Impostazioni</h2>
+                <button
+                  onClick={() => setSettingsOpen(false)}
+                  className="p-1.5 rounded-lg text-secondary hover:bg-elevated hover:text-primary transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto px-5 py-4 space-y-6">
+
+                {/* Model */}
+                <SettingsSection icon={<Cpu className="w-4 h-4" />} title="Modello">
+                  <div className="space-y-2">
+                    {MODELS.map(m => (
+                      <label
+                        key={m.id}
+                        className={`flex items-center justify-between px-3 py-2.5 rounded-xl border cursor-pointer transition-colors ${
+                          settings.model === m.id
+                            ? 'border-accent/60 bg-accent/10 text-primary'
+                            : 'border-border hover:border-accent/30 text-secondary hover:text-primary'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3">
+                          <input
+                            type="radio"
+                            name="model"
+                            value={m.id}
+                            checked={settings.model === m.id}
+                            onChange={() => setSettings(s => ({ ...s, model: m.id }))}
+                            className="accent-accent"
+                          />
+                          <span className="text-sm font-medium">{m.label}</span>
+                        </div>
+                        {m.badge && (
+                          <span className="text-xs px-2 py-0.5 rounded-full bg-accent/20 text-accent font-medium">
+                            {m.badge}
+                          </span>
+                        )}
+                      </label>
+                    ))}
+                  </div>
+                </SettingsSection>
+
+                {/* Temperature */}
+                <SettingsSection icon={<Thermometer className="w-4 h-4" />} title="Temperatura">
+                  <div className="space-y-2">
+                    <input
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      value={settings.temperature}
+                      onChange={e => setSettings(s => ({ ...s, temperature: parseFloat(e.target.value) }))}
+                      className="w-full accent-accent"
+                    />
+                    <div className="flex justify-between text-xs text-muted">
+                      <span>Preciso (0)</span>
+                      <span className="font-mono text-accent font-medium">{settings.temperature.toFixed(2)}</span>
+                      <span>Creativo (1)</span>
+                    </div>
+                  </div>
+                </SettingsSection>
+
+                {/* System prompt */}
+                <SettingsSection icon={<FileText className="w-4 h-4" />} title="Istruzioni di sistema">
+                  <textarea
+                    value={settings.systemPrompt}
+                    onChange={e => setSettings(s => ({ ...s, systemPrompt: e.target.value }))}
+                    rows={6}
+                    className="w-full bg-elevated border border-border rounded-xl px-3 py-2.5 text-xs text-secondary focus:text-primary focus:border-accent/50 focus:outline-none resize-none leading-relaxed transition-colors"
+                    placeholder="Descrivi il comportamento del modello…"
+                  />
+                </SettingsSection>
+
+                {/* Theme note */}
+                <SettingsSection icon={<Moon className="w-4 h-4" />} title="Aspetto">
+                  <div className="flex items-center justify-between px-3 py-2.5 rounded-xl border border-border">
+                    <span className="text-sm text-secondary">Tema scuro</span>
+                    <span className="text-xs text-muted">Attivo</span>
+                  </div>
+                </SettingsSection>
+
+                {/* About */}
+                <SettingsSection icon={<Info className="w-4 h-4" />} title="Informazioni">
+                  <div className="space-y-2 text-xs text-secondary">
+                    <InfoRow label="Versione" value="1.0.0" />
+                    <InfoRow label="Modello attivo" value={MODELS.find(m => m.id === settings.model)?.label ?? '—'} />
+                    <InfoRow label="SDK" value="@google/genai 1.29" />
+                  </div>
+                </SettingsSection>
+
+                {/* Reset */}
+                <button
+                  onClick={() => setSettings(DEFAULT_SETTINGS)}
+                  className="w-full px-3 py-2.5 rounded-xl border border-border text-sm text-secondary hover:bg-elevated hover:text-primary transition-colors"
+                >
+                  Ripristina predefiniti
+                </button>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
 
-// --- Helper Components ---
+// ─── Welcome Screen ───────────────────────────────────────────────────────────
 
-function NavButton({ active, onClick, icon, label }: { active: boolean, onClick: () => void, icon: React.ReactNode, label: string }) {
+function WelcomeScreen({ onSuggestion }: { onSuggestion: (s: string) => void }) {
   return (
-    <button
-      onClick={onClick}
-      className={`
-        flex items-center gap-3 px-4 py-3 rounded-md transition-all duration-200 text-sm font-medium whitespace-nowrap
-        ${active 
-          ? 'bg-dark-bg text-white border border-dark-border shadow-[0_0_15px_rgba(176,38,255,0.1)]' 
-          : 'text-gray-500 hover:text-gray-300 hover:bg-dark-bg/50 border border-transparent'
-        }
-      `}
-    >
-      <span className={active ? 'text-neon-purple' : ''}>{icon}</span>
-      {label}
-    </button>
+    <div className="flex flex-col items-center justify-center h-full px-4 py-12 select-none">
+      <motion.div
+        initial={{ opacity: 0, y: 16 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4 }}
+        className="flex flex-col items-center text-center max-w-xl"
+      >
+        <div className="mb-6">
+          <GemcodeLogo size={48} />
+        </div>
+        <h1 className="text-3xl font-bold text-primary mb-2 tracking-tight">
+          Ciao, come posso aiutarti?
+        </h1>
+        <p className="text-secondary text-base mb-10">
+          Powered by Gemini · GemCode AI Assistant
+        </p>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full max-w-lg">
+          {SUGGESTION_CHIPS.map((chip) => (
+            <button
+              key={chip}
+              onClick={() => onSuggestion(chip)}
+              className="text-left px-4 py-3.5 rounded-2xl border border-border bg-surface hover:bg-elevated hover:border-accent/40 transition-all text-sm text-secondary hover:text-primary leading-snug"
+            >
+              {chip}
+            </button>
+          ))}
+        </div>
+      </motion.div>
+    </div>
   );
 }
 
-function ActionButton({ icon, label, onClick }: { icon: React.ReactNode, label: string, onClick: () => void }) {
+// ─── Message Bubble ───────────────────────────────────────────────────────────
+
+function MessageBubble({ message }: { message: Message }) {
+  const [copied, setCopied] = useState(false);
+  const isUser = message.role === 'user';
+
+  const copyText = () => {
+    navigator.clipboard.writeText(message.text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  };
+
   return (
-    <button
-      onClick={onClick}
-      className="group flex flex-col items-center justify-center gap-3 p-4 bg-dark-bg border border-dark-border rounded-lg hover:border-gray-500 transition-all duration-200 active:scale-[0.98]"
+    <motion.div
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.2 }}
+      className={`flex gap-3 ${isUser ? 'flex-row-reverse' : 'flex-row'}`}
     >
-      <div className="text-gray-400 group-hover:text-white transition-colors">
-        {icon}
+      {/* Avatar */}
+      {!isUser && (
+        <div className="shrink-0 mt-1 w-7 h-7 rounded-full bg-accent/15 border border-accent/20 flex items-center justify-center">
+          <Sparkles className="w-3.5 h-3.5 text-accent" />
+        </div>
+      )}
+
+      {/* Bubble */}
+      <div className={`group relative max-w-[80%] ${isUser ? 'items-end' : 'items-start'} flex flex-col gap-1`}>
+        <div
+          className={`px-4 py-3 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap break-words ${
+            isUser
+              ? 'bg-accent/15 border border-accent/20 text-primary rounded-tr-sm'
+              : 'text-primary rounded-tl-sm'
+          }`}
+        >
+          {message.text}
+          {message.isStreaming && (
+            <span className="inline-block w-2 h-4 ml-0.5 bg-accent/70 rounded-sm animate-pulse align-middle" />
+          )}
+        </div>
+
+        {/* Copy button */}
+        {!message.isStreaming && message.text && (
+          <button
+            onClick={copyText}
+            className="opacity-0 group-hover:opacity-100 self-end flex items-center gap-1.5 text-xs text-muted hover:text-secondary transition-all px-1.5 py-0.5 rounded-md"
+          >
+            {copied ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
+            {copied ? 'Copiato' : 'Copia'}
+          </button>
+        )}
       </div>
-      <span className="text-sm font-medium text-gray-300 group-hover:text-white text-center">
-        {label}
-      </span>
-    </button>
+    </motion.div>
+  );
+}
+
+// ─── Settings Helpers ─────────────────────────────────────────────────────────
+
+function SettingsSection({
+  icon,
+  title,
+  children,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2 text-muted">
+        {icon}
+        <h3 className="text-xs font-semibold uppercase tracking-wider">{title}</h3>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function InfoRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between py-1.5 border-b border-border/50 last:border-0">
+      <span className="text-muted">{label}</span>
+      <span className="font-medium text-secondary">{value}</span>
+    </div>
+  );
+}
+
+// ─── Logo ─────────────────────────────────────────────────────────────────────
+
+function GemcodeLogo({ size = 28 }: { size?: number }) {
+  return (
+    <div
+      style={{ width: size, height: size }}
+      className="rounded-xl bg-gradient-to-br from-accent via-blue-500 to-accent-hover flex items-center justify-center shrink-0 shadow-sm"
+    >
+      <Sparkles style={{ width: size * 0.5, height: size * 0.5 }} className="text-white" />
+    </div>
   );
 }
