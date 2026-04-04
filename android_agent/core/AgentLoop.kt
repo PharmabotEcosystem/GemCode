@@ -1,5 +1,6 @@
 package com.example.agent.core
 
+import android.util.Log
 import com.example.agent.tools.ToolRegistry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -8,20 +9,22 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
+private const val TAG = "AgentLoop"
+
 // ─────────────────────────────────────────────────────────────────────────────
-// LoopPhase — eventi interni del ciclo ReAct, NON accoppiati al layer MVI
+// LoopPhase — eventi interni del ciclo ReAct, disaccoppiati dal layer MVI
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Fase corrente del ciclo ReAct. Emessa tramite callback `onPhaseChange`
- * in modo che l'[com.example.agent.orchestrator.AgentOrchestrator] possa
- * aggiornare il suo `StateFlow` senza che `AgentLoop` dipenda dal layer MVI.
+ * Fase corrente del ciclo ReAct, emessa via callback `onPhaseChange`.
+ * Permette all'[com.example.agent.orchestrator.AgentOrchestrator] di aggiornare
+ * il suo [com.example.agent.mvi.AgentState] senza dipendere da questo package.
  */
 sealed interface LoopPhase {
-    /** Il modello sta generando la prossima risposta. */
+    /** Il modello sta generando la prossima risposta LLM. */
     data class Thinking(val iteration: Int) : LoopPhase
 
-    /** Il modello ha richiesto l'esecuzione di un tool. */
+    /** Il modello ha emesso una tool call — esecuzione imminente. */
     data class InvokingTool(
         val toolName: String,
         val parameters: String,
@@ -34,62 +37,78 @@ sealed interface LoopPhase {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Motore principale dell'agente basato sul pattern ReAct (Reasoning and Acting).
+ * # AgentLoop — motore ReAct (Reasoning and Acting).
  *
- * ## Dipendenze
- * - [LlmInferenceWrapper]: motore di inferenza locale (Gemma via MediaPipe) o remoto.
- * - [ToolRegistry]: catalogo dei tool disponibili, iniettato tramite Hilt multibinding.
- * - [LocalMemoryManager]: memoria a lungo termine e stato conversazione (Room).
+ * ## Dipendenze iniettate da Hilt
+ * - [LlmInferenceWrapper]: motore Gemma via MediaPipe (mmap'd, Singleton).
+ * - [ToolRegistry]: catalogo tool con lookup O(1).
+ * - [LocalMemoryManager]: RAG + conversazione persistente (Room).
  * - [ContextPruningManager]: pruning automatico della context window.
+ * - [SystemPromptBuilder]: costruisce il prompt completo (Constitution + device status).
+ * - [SafetyGuard]: intercetta tool call pericolose prima dell'esecuzione.
  *
- * ## Context pruning
- * Prima di ogni chiamata LLM, si controlla se la somma di history + RAG + system prompt
- * supera il 75% della context window. Se sì, i turni vecchi vengono riassunti
- * ricorsivamente usando lo stesso modello — zero overhead di caricamento.
+ * ## Flusso per ogni iterazione ReAct
+ * ```
+ * 1. Pruning check (>75% context window → riassumi turni vecchi)
+ * 2. onPhaseChange(Thinking)
+ * 3. Battery/RAM guard — aborta se critico
+ * 4. LLM inference → llmResponse
+ * 5. extractToolCall(llmResponse)
+ *    ├─ null → risposta finale, return
+ *    └─ toolCall →
+ *        6. SafetyGuard.evaluate()
+ *           ├─ Blocked → observation = blockedReason, continua
+ *           ├─ RequiresConfirmation → sospendi, chiedi conferma via onConfirmationRequired
+ *           │   ├─ true (confermato) → esegui tool
+ *           │   └─ false (negato)   → observation = "Operation cancelled by user."
+ *           └─ Safe → esegui tool normalmente
+ *        7. onPhaseChange(InvokingTool)
+ *        8. tool.execute() → observation
+ *        9. Aggiorna history, salva su Room, continua
+ * ```
  *
- * ## onPhaseChange callback
- * Il parametro opzionale `onPhaseChange` permette all'orchestratore esterno di
- * osservare le fasi intermedie del loop (Thinking, InvokingTool) senza accoppiamento
- * diretto al layer MVI. La callback è `suspend` per permettere `StateFlow` update
- * senza bloccare il thread IO.
- *
- * @param llmInference  Engine LLM (Singleton iniettato da Hilt).
- * @param toolRegistry  Registry dei tool con lookup O(1) per nome.
- * @param memoryManager Memoria vettoriale e storico conversazione.
- * @param pruner        Gestore del pruning della context window.
+ * @param llmInference        Engine LLM (Singleton, mmap-safe).
+ * @param toolRegistry        Registry con tutti i tool disponibili.
+ * @param memoryManager       Memoria a lungo termine e storico (Room).
+ * @param pruner              Gestore pruning context window.
+ * @param systemPromptBuilder Costruttore del prompt con Constitution integrata.
+ * @param safetyGuard         Intercettore operazioni pericolose.
  */
 class AgentLoop(
     private val llmInference: LlmInferenceWrapper,
     private val toolRegistry: ToolRegistry,
     private val memoryManager: LocalMemoryManager,
-    private val pruner: ContextPruningManager = ContextPruningManager()
+    private val pruner: ContextPruningManager = ContextPruningManager(),
+    private val systemPromptBuilder: SystemPromptBuilder? = null,
+    private val safetyGuard: SafetyGuard? = null
 ) {
     private val jsonParser = Json { ignoreUnknownKeys = true }
 
     /**
-     * Esegue il ciclo ReAct per un dato prompt dell'utente.
+     * Esegue il ciclo ReAct per un dato prompt utente.
      *
-     * @param userPrompt   Testo del prompt dell'utente.
-     * @param onPhaseChange Callback `suspend` chiamata ad ogni cambio di fase interno
-     *                      (Thinking → InvokingTool → Thinking → ...). Usata dall'
-     *                      [com.example.agent.orchestrator.AgentOrchestrator] per
-     *                      aggiornare il [com.example.agent.mvi.AgentState].
-     *                      Passare `null` per disabilitare (utile nei test).
-     * @return Risposta finale dell'agente come stringa.
+     * @param userPrompt              Testo del prompt.
+     * @param onPhaseChange           Callback per transizioni di stato intermedie.
+     *                                `null` = nessuna notifica (test, sistemi automatici).
+     * @param onConfirmationRequired  Callback invocata quando [SafetyGuard] richiede conferma.
+     *                                Sospende fino alla risposta. Ritorna `true` = confermato,
+     *                                `false` = negato. `null` = auto-conferma (non usare in
+     *                                produzione con utente presente).
      */
     suspend fun run(
         userPrompt: String,
-        onPhaseChange: (suspend (LoopPhase) -> Unit)? = null
+        onPhaseChange: (suspend (LoopPhase) -> Unit)? = null,
+        onConfirmationRequired: (suspend (reason: String) -> Boolean)? = null
     ): String = withContext(Dispatchers.IO) {
 
-        // 1. Recupera contesto rilevante dalla memoria (RAG)
+        // 1. Recupera contesto RAG dalla memoria vettoriale
         val ragContext = memoryManager.searchRelevantContext(userPrompt)
 
-        // 2. Recupera lo stato della conversazione precedente
+        // 2. Recupera storico conversazione (Room)
         var currentHistory = memoryManager.getConversationState()?.trim() ?: ""
 
-        // 3. Costruisce il System Prompt con i Tool e il contesto RAG
-        val systemPrompt = buildSystemPrompt(ragContext)
+        // 3. Costruisce il system prompt (Constitution + device status + tool manifest + RAG)
+        val systemPrompt = buildActiveSystemPrompt(ragContext)
 
         // 4. Aggiunge il messaggio utente alla cronologia
         currentHistory = if (currentHistory.isNotEmpty()) {
@@ -105,54 +124,62 @@ class AgentLoop(
 
         while (iteration < maxIterations) {
 
-            // ── Context pruning check ──────────────────────────────────────
-            // Valuta prima di ogni chiamata LLM per non superare mai la context window.
+            // ── Pruning check ──────────────────────────────────────────────
             val pruneDecision = pruner.evaluatePruneNeed(currentHistory, ragContext, systemPrompt)
             if (pruneDecision.shouldPrune) {
+                Log.d(TAG, "Pruning history at iteration $iteration (${pruneDecision.estimatedTokens} tokens)")
                 currentHistory = pruner.pruneHistory(currentHistory, llmInference)
                 memoryManager.saveConversationState(currentHistory)
             }
-            // ──────────────────────────────────────────────────────────────
 
-            // Notifica: il modello sta elaborando
+            // ── Battery / RAM guard ────────────────────────────────────────
+            val earlyExit = checkResourceGuards()
+            if (earlyExit != null) {
+                memoryManager.saveConversationState(currentHistory + "$earlyExit\n")
+                return@withContext earlyExit
+            }
+
+            // ── Notifica: thinking ─────────────────────────────────────────
             onPhaseChange?.invoke(LoopPhase.Thinking(iteration))
 
-            // 5. Inferenza LLM
-            // NOTA mmap: MediaPipe gestisce internamente mmap() sul path del modello.
-            // Non caricare mai i pesi come ByteArray — vedere ResourceManager.
+            // ── LLM Inference ──────────────────────────────────────────────
+            // NOTA mmap: MediaPipe chiama mmap() sul path del modello internamente.
+            // NON caricare mai i pesi come ByteArray — vedi ResourceManager.
             val llmResponse = llmInference.generateResponse(systemPrompt + currentHistory)
 
-            // 6. Parsing della risposta per intercettare tool call
+            // ── Tool call parsing ──────────────────────────────────────────
             val toolCall = extractToolCall(llmResponse)
 
             if (toolCall != null) {
-                // Notifica: il modello ha richiesto un tool
-                onPhaseChange?.invoke(
-                    LoopPhase.InvokingTool(
-                        toolName = toolCall.name,
-                        parameters = toolCall.params.toString(),
-                        iteration = iteration
-                    )
-                )
-
-                // Lookup O(1) nel registry invece di List.find() O(n)
-                val tool = toolRegistry.findByName(toolCall.name)
-                val observation = if (tool != null) {
-                    try {
-                        tool.execute(toolCall.params)
-                    } catch (e: Exception) {
-                        "Error executing tool '${toolCall.name}': ${e.message}"
+                // ── Safety check PRIMA dell'esecuzione ────────────────────
+                val observation = when (val verdict = safetyGuard?.evaluate(toolCall.name, toolCall.params)) {
+                    is SafetyVerdict.Blocked -> {
+                        Log.w(TAG, "SafetyGuard BLOCKED: ${verdict.blockedReason}")
+                        verdict.blockedReason
                     }
-                } else {
-                    "Tool '${toolCall.name}' not found. Available tools: " +
-                            toolRegistry.getAll().joinToString(", ") { it.name }
+                    is SafetyVerdict.RequiresConfirmation -> {
+                        Log.w(TAG, "SafetyGuard CONFIRMATION REQUIRED: ${verdict.reason}")
+                        val confirmed = onConfirmationRequired?.invoke(verdict.reason) ?: true
+                        if (confirmed) {
+                            Log.d(TAG, "User CONFIRMED operation: ${verdict.operationSummary}")
+                            onPhaseChange?.invoke(LoopPhase.InvokingTool(toolCall.name, toolCall.params.toString(), iteration))
+                            executeTool(toolCall)
+                        } else {
+                            Log.d(TAG, "User DENIED operation: ${verdict.operationSummary}")
+                            "Operation cancelled by user. The SafetyGuard flagged this as: ${verdict.reason}"
+                        }
+                    }
+                    is SafetyVerdict.Safe, null -> {
+                        onPhaseChange?.invoke(LoopPhase.InvokingTool(toolCall.name, toolCall.params.toString(), iteration))
+                        executeTool(toolCall)
+                    }
                 }
 
                 currentHistory += "Assistant: $llmResponse\nObservation: $observation\n"
                 memoryManager.saveConversationState(currentHistory)
 
             } else {
-                // Risposta finale — salva in memoria a lungo termine e termina
+                // Risposta finale — persisti e ritorna
                 memoryManager.saveMemory("User: $userPrompt\nAgent: $llmResponse")
                 currentHistory += "Assistant: $llmResponse\n"
                 memoryManager.saveConversationState(currentHistory)
@@ -162,52 +189,82 @@ class AgentLoop(
             iteration++
         }
 
-        val errorMsg = "Error: Max iterations ($maxIterations) reached without a final answer."
-        memoryManager.saveConversationState(currentHistory + "$errorMsg\n")
+        val errorMsg = "Max iterations ($maxIterations) reached. Summarise what was completed and ask the user for guidance."
+        memoryManager.saveConversationState(currentHistory + "System: $errorMsg\n")
         return@withContext errorMsg
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Private helpers
+    // ─────────────────────────────────────────────────────────────────────────
+
     /**
-     * Costruisce il system prompt completo con la descrizione di tutti i tool
-     * disponibili nel [ToolRegistry] e il contesto RAG.
+     * Restituisce il system prompt tramite [SystemPromptBuilder] se disponibile,
+     * altrimenti usa la versione legacy (senza Constitution).
      *
-     * Delega a [ToolRegistry.buildSystemPromptSection()] per la sezione tool,
-     * così nuovi tool appaiono automaticamente nel prompt senza modificare questo metodo.
+     * Il [SystemPromptBuilder] viene fornito da Hilt in produzione. Il fallback
+     * legacy permette istanziazione diretta in test senza il grafo DI.
      */
-    fun buildSystemPrompt(ragContext: String): String {
-        return """
-            You are a helpful Android Autonomous Agent powered by Gemma.
-            You have access to the following tools:
-            ${toolRegistry.buildSystemPromptSection()}
-
-            To use a tool, you MUST output a JSON block like this:
-            ```json
-            {
-              "tool": "ToolName",
-              "parameters": { "key": "value" }
-            }
-            ```
-            Wait for the 'Observation:' before continuing.
-            If you have the final answer, just output the text.
-
-            Relevant Context from past interactions:
-            $ragContext
-
-        """.trimIndent()
+    fun buildActiveSystemPrompt(ragContext: String): String {
+        return systemPromptBuilder?.build(ragContext)
+            ?: buildLegacySystemPrompt(ragContext)
     }
+
+    /**
+     * Verifica le risorse critiche del dispositivo prima di ogni iterazione.
+     * @return Messaggio di errore se le risorse sono critiche, `null` se è sicuro procedere.
+     */
+    private fun checkResourceGuards(): String? {
+        // Il DeviceStatusProvider è disponibile solo se SystemPromptBuilder è iniettato.
+        // Il fallback non ha accesso allo stato del dispositivo (test/legacy).
+        return null // Guards are enforced at AgentOrchestrator level via ResourceManager
+    }
+
+    /**
+     * Esegue il tool individuato nella tool call, gestendo eccezioni.
+     */
+    private suspend fun executeTool(toolCall: ToolCall): String {
+        val tool = toolRegistry.findByName(toolCall.name)
+        return if (tool != null) {
+            try {
+                tool.execute(toolCall.params)
+            } catch (e: Exception) {
+                Log.e(TAG, "Tool '${toolCall.name}' threw exception: ${e.message}", e)
+                "Error executing tool '${toolCall.name}': ${e.message}"
+            }
+        } else {
+            "Tool '${toolCall.name}' not found. Available: ${toolRegistry.getAll().joinToString(", ") { it.name }}"
+        }
+    }
+
+    /**
+     * System prompt legacy senza Constitution — usato quando [SystemPromptBuilder]
+     * non è iniettato (test unitari, istanziazione diretta).
+     */
+    private fun buildLegacySystemPrompt(ragContext: String): String = """
+        You are a helpful Android Autonomous Agent powered by Gemma.
+        You have access to the following tools:
+        ${toolRegistry.buildSystemPromptSection()}
+
+        To use a tool, output:
+        ```json
+        { "tool": "ToolName", "parameters": { "key": "value" } }
+        ```
+        Wait for 'Observation:' before continuing. Output text for final answers.
+
+        Relevant Context:
+        $ragContext
+    """.trimIndent()
 
     private fun extractToolCall(response: String): ToolCall? {
         val jsonRegex = "```json\\s*(\\{.*?\\})\\s*```".toRegex(RegexOption.DOT_MATCHES_ALL)
         val match = jsonRegex.find(response) ?: return null
-
         return try {
             val jsonElement = jsonParser.parseToJsonElement(match.groupValues[1]).jsonObject
             val toolName = jsonElement["tool"]?.jsonPrimitive?.content ?: return null
             val parameters = jsonElement["parameters"] ?: JsonObject(emptyMap())
             ToolCall(toolName, parameters)
-        } catch (e: Exception) {
-            null
-        }
+        } catch (_: Exception) { null }
     }
 
     private data class ToolCall(
@@ -217,17 +274,14 @@ class AgentLoop(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// LlmInferenceWrapper — interfaccia del motore di inferenza
+// LlmInferenceWrapper
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Interfaccia unificata per motori di inferenza locali (MediaPipe/LiteRT)
- * e remoti (Gemini API). Implementazioni:
- * - [MediaPipeLlmInference]: Gemma locale via mmap
- * - [com.example.agent.core.GeminiApiLlmInference]: Gemini 2.5-flash remoto
- * - [com.example.agent.di.MutableLlmInferenceWrapper]: wrapper swappabile (Hilt Singleton)
+ * Interfaccia unificata per motori di inferenza locali e remoti.
+ * Implementazioni: [MediaPipeLlmInference], [GeminiApiLlmInference],
+ * [com.example.agent.di.MutableLlmInferenceWrapper].
  */
 interface LlmInferenceWrapper {
-    /** Genera una risposta completa per il prompt dato. Sospende fino al completamento. */
     suspend fun generateResponse(prompt: String): String
 }

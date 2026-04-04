@@ -2,10 +2,12 @@ package com.example.agent.di
 
 import android.content.Context
 import android.content.SharedPreferences
-import androidx.room.Room
 import com.example.agent.core.AgentLoop
 import com.example.agent.core.ContextPruningManager
+import com.example.agent.core.DeviceStatusProvider
 import com.example.agent.core.LlmInferenceWrapper
+import com.example.agent.core.SafetyGuard
+import com.example.agent.core.SystemPromptBuilder
 import com.example.agent.memory.AppDatabase
 import com.example.agent.memory.EmbeddingModelWrapper
 import com.example.agent.memory.LocalMemoryManager
@@ -17,46 +19,40 @@ import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
+import androidx.room.Room
 import javax.inject.Named
 import javax.inject.Singleton
 
 /**
  * # AgentModule — Hilt DI module per i Singleton di infrastruttura.
  *
- * ## Filosofia delle dipendenze
+ * ## Gerarchia delle dipendenze
+ * ```
+ * ApplicationContext
+ *   ├── AppDatabase (Room, Singleton)
+ *   ├── EmbeddingModelWrapper (Singleton)
+ *   ├── LocalMemoryManager → AppDatabase + EmbeddingModelWrapper
+ *   ├── ShizukuCommandExecutor (Singleton, @Inject constructor)
+ *   ├── DeviceStatusProvider → Context + ShizukuCommandExecutor
+ *   ├── MutableLlmInferenceWrapper (Singleton — lazy-init via InitializeModel)
+ *   ├── ContextPruningManager (Singleton)
+ *   ├── SafetyGuard (Singleton, @Inject constructor)
+ *   ├── SystemPromptBuilder → DeviceStatusProvider + ToolRegistry
+ *   └── AgentLoop → LlmInference + ToolRegistry + Memory + Pruner + PromptBuilder + SafetyGuard
+ * ```
  *
- * Tutte le dipendenze pesanti — il motore di inferenza LLM, il database Room,
- * il gestore della memoria vettoriale — sono `@Singleton`. Android crea
- * un'unica istanza per il ciclo di vita dell'`Application`. In questo modo:
- *
- * - Il file del modello Gemma viene mappato in memoria **una sola volta** via mmap.
- *   Creare un secondo `LlmInference` istanzierebbe un secondo fd mmap sullo stesso
- *   file, sprecando VA space e potenzialmente confondendo il kernel con due
- *   reference count distinti sulle pagine shared.
- *
- * - Il database Room è intrinsecamente Singleton: costruirne più istanze con
- *   lo stesso path può causare lock file conflicts su SQLite e deadlock nelle query.
- *
- * ## LlmInferenceWrapper — lazy configurable Singleton
- *
- * Il percorso del modello dipende dalla scelta dell'utente in SharedPreferences
- * e può cambiare a runtime. Per gestire questo senza distruggere il grafo DI,
- * forniamo un [MutableLlmInferenceWrapper] — un wrapper che delega a un'istanza
- * interna swappabile via `initialize(path)`. L'[AgentOrchestrator] chiama
- * `initialize` in risposta all'intent [AgentIntent.InitializeModel].
- *
- * ## Thread safety
- * Tutti i `@Provides` sono chiamati dal thread principale durante l'init Hilt.
- * Le istanze Singleton prodotte sono poi usate su thread IO tramite coroutine.
- * Room e MediaPipe gestiscono internamente la propria thread safety.
+ * ## Nota su MutableLlmInferenceWrapper
+ * Il percorso del modello Gemma dipende dalla scelta utente in SharedPreferences
+ * e può cambiare a runtime. Hilt costruisce il grafo al lancio dell'app, prima che
+ * il modello sia scelto o scaricato. Per questo forniamo un wrapper swappabile:
+ * - All'avvio: `DummyLlmInference` (risponde con errore esplicito)
+ * - Dopo `AgentIntent.InitializeModel`: `MediaPipeLlmInference` (mmap attivo)
  */
 @Module
 @InstallIn(SingletonComponent::class)
 object AgentModule {
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Preferences
-    // ─────────────────────────────────────────────────────────────────────────
+    // ── SharedPreferences ─────────────────────────────────────────────────────
 
     @Provides
     @Singleton
@@ -64,19 +60,11 @@ object AgentModule {
     fun provideUserProfilePrefs(@ApplicationContext context: Context): SharedPreferences =
         context.getSharedPreferences("user_profile", Context.MODE_PRIVATE)
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // VectorMemoryDB — Room database (STRICT Singleton)
-    // ─────────────────────────────────────────────────────────────────────────
+    // ── Room Database (VectorMemoryDB) ────────────────────────────────────────
 
     /**
-     * Istanza Singleton del database Room.
-     *
-     * CRITICO: mai costruire più di una `AppDatabase` per lo stesso file.
-     * Room usa un WAL (Write-Ahead Log) su SQLite; due istanze separate
-     * non condividono la cache del WAL e possono causare `DatabaseObjectNotClosedException`.
-     *
-     * `fallbackToDestructiveMigration()` è accettabile in fase prototipale.
-     * In produzione, fornire una `Migration` esplicita per ogni cambio di schema.
+     * Singleton Room database.
+     * CRITICO: una sola istanza per file — Room usa WAL, due istanze causano lock conflict.
      */
     @Provides
     @Singleton
@@ -89,35 +77,18 @@ object AgentModule {
             .fallbackToDestructiveMigration()
             .build()
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // EmbeddingModelWrapper — da sostituire con TFLite/MiniLM in produzione
-    // ─────────────────────────────────────────────────────────────────────────
+    // ── Embedding model ────────────────────────────────────────────────────────
 
     /**
-     * Fornisce il modello di embedding per la ricerca vettoriale.
-     *
-     * In produzione sostituire `DummyEmbeddingModel` con un'implementazione
-     * TFLite che esegue MiniLM-L6 (384 dim) o un modello custom — che deve
-     * anch'essa usare `setModelPath()` per il mmap.
-     *
-     * La `DummyEmbeddingModel` restituisce vettori costanti (0.1f × 384):
-     * la cosine similarity sarà trivialmente 1.0 per tutti i testi, rendendo
-     * il RAG inutile ma funzionalmente non crashante durante lo sviluppo.
+     * Placeholder embedding model — restituisce vettori costanti.
+     * Sostituire con TFLite MiniLM-L6 (384 dim) in produzione.
      */
     @Provides
     @Singleton
     fun provideEmbeddingModel(): EmbeddingModelWrapper = DummyEmbeddingModel()
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // LocalMemoryManager — facade su Room + embedding (STRICT Singleton)
-    // ─────────────────────────────────────────────────────────────────────────
+    // ── LocalMemoryManager (VectorMemoryDB facade) ────────────────────────────
 
-    /**
-     * Gestisce la memoria vettoriale a lungo termine e lo stato della conversazione.
-     *
-     * Dipende da [AppDatabase] (Singleton) e [EmbeddingModelWrapper] (Singleton),
-     * garantendo che non ci sia mai più di una connessione aperta al DB.
-     */
     @Provides
     @Singleton
     fun provideLocalMemoryManager(
@@ -125,34 +96,30 @@ object AgentModule {
         embeddingModel: EmbeddingModelWrapper
     ): LocalMemoryManager = LocalMemoryManager(context, embeddingModel)
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // LlmInferenceWrapper — lazy configurable Singleton (mmap-safe)
-    // ─────────────────────────────────────────────────────────────────────────
+    // ── LlmInferenceWrapper (lazy-swappable Singleton) ────────────────────────
 
     /**
-     * Fornisce il motore di inferenza locale come Singleton swappabile.
+     * Fornisce [MutableLlmInferenceWrapper] come [LlmInferenceWrapper].
+     * Il modello effettivo viene caricato da [AgentOrchestrator] via
+     * `AgentIntent.InitializeModel` → `llmWrapper.initialize(MediaPipeLlmInference(...))`.
      *
-     * [MutableLlmInferenceWrapper] parte con un `DummyLlmInference` (nessun modello
-     * caricato) e si aggiorna quando [AgentOrchestrator] riceve `InitializeModel`.
-     *
-     * ## Perché non `MediaPipeLlmInference` direttamente?
-     * Il percorso del modello dipende da SharedPreferences (scelta dell'utente) e
-     * viene risolto solo dopo il download. Hilt costruisce il grafo DI al lancio
-     * dell'app, quindi non abbiamo il path disponibile in anticipo.
-     *
-     * ## Sicurezza mmap
-     * Quando `initialize(path)` swappa il delegate, il vecchio `LlmInference`
-     * viene rilasciato (il suo `close()` è chiamato da `MediaPipeLlmInference`
-     * in un `try-finally`). Le pagine mmap del vecchio modello vengono
-     * rilasciate dal kernel non appena l'ultimo file descriptor viene chiuso.
+     * mmap safety: `MediaPipeLlmInference` usa `setModelPath()` → mmap nativo.
+     * Non caricare mai i pesi come ByteArray.
      */
     @Provides
     @Singleton
     fun provideLlmInferenceWrapper(): LlmInferenceWrapper = MutableLlmInferenceWrapper()
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // ContextPruningManager
-    // ─────────────────────────────────────────────────────────────────────────
+    /**
+     * Espone anche la classe concreta [MutableLlmInferenceWrapper] per i clienti
+     * che devono chiamare `initialize()` (es. [AgentOrchestrator]).
+     * Questa istanza È la stessa fornita come [LlmInferenceWrapper] — il cast è safe.
+     */
+    @Provides
+    @Singleton
+    fun provideMutableLlmWrapper(): MutableLlmInferenceWrapper = MutableLlmInferenceWrapper()
+
+    // ── ContextPruningManager ─────────────────────────────────────────────────
 
     @Provides
     @Singleton
@@ -163,14 +130,53 @@ object AgentModule {
             keepLastNTurns = 4
         )
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // AgentLoop — core del ciclo ReAct
-    // ─────────────────────────────────────────────────────────────────────────
+    // ── DeviceStatusProvider ──────────────────────────────────────────────────
 
     /**
-     * L'[AgentLoop] è Singleton perché mantiene il parser JSON e i riferimenti
-     * alle dipendenze pesanti. Non ha stato mutabile proprio — tutto lo stato
-     * di conversazione vive in [LocalMemoryManager] (Room).
+     * Fornisce snapshot in tempo reale di batteria, RAM e stato Shizuku.
+     * Usato da [SystemPromptBuilder] per il Layer 2 del system prompt.
+     * Le letture sono non-bloccanti (BatteryManager sticky broadcast, ActivityManager IPC).
+     */
+    @Provides
+    @Singleton
+    fun provideDeviceStatusProvider(
+        @ApplicationContext context: Context,
+        shizukuExecutor: ShizukuCommandExecutor
+    ): DeviceStatusProvider = DeviceStatusProvider(context, shizukuExecutor)
+
+    // ── SystemPromptBuilder ───────────────────────────────────────────────────
+
+    /**
+     * Costruisce il system prompt completo ad ogni inferenza:
+     * Constitution (immutabile) + Device Status + Tool Manifest + RAG Context.
+     *
+     * La [SystemPromptBuilder.CONSTITUTION] è un `const val` compile-time —
+     * non può essere modificata da SharedPreferences, Intent, o input utente.
+     */
+    @Provides
+    @Singleton
+    fun provideSystemPromptBuilder(
+        deviceStatusProvider: DeviceStatusProvider,
+        toolRegistry: ToolRegistry
+    ): SystemPromptBuilder = SystemPromptBuilder(deviceStatusProvider, toolRegistry)
+
+    // ── SafetyGuard ────────────────────────────────────────────────────────────
+
+    /**
+     * Intercettore di sicurezza — valuta ogni tool call prima dell'esecuzione.
+     * [SafetyGuard] ha `@Inject constructor()` e non ha dipendenze esterne,
+     * ma lo esplicitiamo qui per visibilità nel grafo DI.
+     */
+    @Provides
+    @Singleton
+    fun provideSafetyGuard(): SafetyGuard = SafetyGuard()
+
+    // ── AgentLoop ─────────────────────────────────────────────────────────────
+
+    /**
+     * Core del ciclo ReAct. Singleton per preservare il parser JSON e le
+     * referenze alle dipendenze pesanti. Lo stato della conversazione vive
+     * in [LocalMemoryManager] (Room), non nell'AgentLoop.
      */
     @Provides
     @Singleton
@@ -178,17 +184,19 @@ object AgentModule {
         llmInference: LlmInferenceWrapper,
         toolRegistry: ToolRegistry,
         memoryManager: LocalMemoryManager,
-        pruner: ContextPruningManager
+        pruner: ContextPruningManager,
+        systemPromptBuilder: SystemPromptBuilder,
+        safetyGuard: SafetyGuard
     ): AgentLoop = AgentLoop(
         llmInference = llmInference,
         toolRegistry = toolRegistry,
         memoryManager = memoryManager,
-        pruner = pruner
+        pruner = pruner,
+        systemPromptBuilder = systemPromptBuilder,
+        safetyGuard = safetyGuard
     )
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // ResourceManager (object → no Provider needed, ma lo rendiamo iniettabile)
-    // ─────────────────────────────────────────────────────────────────────────
+    // ── ResourceManager ────────────────────────────────────────────────────────
 
     @Provides
     @Singleton
@@ -196,13 +204,9 @@ object AgentModule {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Implementazioni interne del modulo (non esposte fuori dal package di/*)
+// Implementazioni interne
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Embedding model fittizio — restituisce vettori costanti durante sviluppo/test.
- * Sostituire con l'implementazione TFLite per la produzione.
- */
 private class DummyEmbeddingModel : EmbeddingModelWrapper {
     override suspend fun getEmbedding(text: String): FloatArray = FloatArray(384) { 0.1f }
 }
@@ -210,27 +214,29 @@ private class DummyEmbeddingModel : EmbeddingModelWrapper {
 /**
  * Wrapper del motore di inferenza con delegate swappabile a runtime.
  *
- * `@Volatile` su `delegate` garantisce visibilità tra thread senza lock overhead,
- * sufficiente per write-rare / read-frequent (il modello viene cambiato raramente).
+ * `@Volatile` su `delegate` garantisce visibilità cross-thread senza lock.
+ * Sufficiente per write-rare (cambio modello) / read-frequent (ogni inferenza).
  */
 class MutableLlmInferenceWrapper : LlmInferenceWrapper {
     @Volatile
-    private var delegate: LlmInferenceWrapper = DummyLlmInference()
+    private var delegate: LlmInferenceWrapper = UninitializedLlmInference()
 
-    /** Sostituisce il motore attivo. Chiamato dall'AgentOrchestrator in risposta a InitializeModel. */
     fun initialize(newEngine: LlmInferenceWrapper) {
+        val old = delegate
         delegate = newEngine
+        // Rilascia l'engine precedente se implementa Closeable
+        if (old is AutoCloseable) try { old.close() } catch (_: Exception) {}
     }
 
     val isInitialized: Boolean
-        get() = delegate !is DummyLlmInference
+        get() = delegate !is UninitializedLlmInference
 
     override suspend fun generateResponse(prompt: String): String =
         delegate.generateResponse(prompt)
 }
 
-/** Fallback usato quando il modello non è ancora stato caricato. */
-private class DummyLlmInference : LlmInferenceWrapper {
+private class UninitializedLlmInference : LlmInferenceWrapper {
     override suspend fun generateResponse(prompt: String): String =
-        "Error: Local model not initialized. Please download and select a model first."
+        "AGENT ERROR: Local model not initialized. " +
+                "Dispatch AgentIntent.InitializeModel(modelPath) before sending prompts."
 }

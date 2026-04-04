@@ -85,6 +85,23 @@ sealed interface AgentState {
     ) : AgentState
 
     /**
+     * Il [SafetyGuard] ha rilevato un'operazione potenzialmente distruttiva.
+     * Il ciclo ReAct è SOSPESO e attende la risposta dell'utente tramite
+     * [com.example.agent.mvi.AgentIntent.ConfirmAction] o [AgentIntent.DenyAction].
+     *
+     * La UI deve mostrare un dialog non-dismissibile con i dettagli dell'operazione.
+     *
+     * @param reason              Spiegazione del rischio da mostrare all'utente.
+     * @param operationSummary    Descrizione concisa dell'operazione richiesta dal modello.
+     * @param toolName            Nome del tool che ha triggerato il safety check.
+     */
+    data class AwaitingConfirmation(
+        val reason: String,
+        val operationSummary: String,
+        val toolName: String
+    ) : AgentState
+
+    /**
      * Errore non recuperabile che ha interrotto il ciclo di inferenza.
      * L'agente rimane bloccato in questo stato finché l'utente non
      * dispatcha [com.example.agent.mvi.AgentIntent.RetryLastPrompt] o
@@ -112,6 +129,7 @@ fun AgentState.toStatusLabel(): String = when (this) {
     is AgentState.Idle -> "Idle — pronto"
     is AgentState.Reasoning -> "Ragionamento… (iter ${iteration + 1})"
     is AgentState.ExecutingTool -> "Esecuzione: $toolName"
+    is AgentState.AwaitingConfirmation -> "⚠ Conferma richiesta: $toolName"
     is AgentState.CriticalError -> "Errore critico"
 }
 
@@ -121,4 +139,7 @@ val AgentState.isReadyForInput: Boolean
 
 /** True quando l'agente è impegnato in lavoro asincrono non interrompibile immediatamente. */
 val AgentState.isBusy: Boolean
-    get() = this is AgentState.Reasoning || this is AgentState.ExecutingTool || this is AgentState.LoadingWeights
+    get() = this is AgentState.Reasoning
+            || this is AgentState.ExecutingTool
+            || this is AgentState.LoadingWeights
+            || this is AgentState.AwaitingConfirmation

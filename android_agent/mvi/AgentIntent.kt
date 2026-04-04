@@ -85,4 +85,20 @@ sealed interface AgentIntent {
      * Utile per recovery automatici (es. dopo ricarica del modello).
      */
     data object RetryLastPrompt : AgentIntent
+
+    /**
+     * L'utente ha confermato l'operazione pericolosa segnalata dal [SafetyGuard].
+     * Riprende il ciclo ReAct sospeso nello stato [AgentState.AwaitingConfirmation].
+     *
+     * La UI deve richiedere questa conferma tramite un dialog esplicito (non dismissibile
+     * con back-gesture) che mostri [AgentState.AwaitingConfirmation.operationSummary].
+     */
+    data object ConfirmAction : AgentIntent
+
+    /**
+     * L'utente ha negato l'operazione pericolosa.
+     * Il loop ReAct riceve "Operation cancelled by user." come Observation e
+     * può tentare un approccio alternativo o terminare.
+     */
+    data object DenyAction : AgentIntent
 }

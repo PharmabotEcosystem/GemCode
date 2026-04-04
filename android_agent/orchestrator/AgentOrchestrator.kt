@@ -3,15 +3,16 @@ package com.example.agent.orchestrator
 import android.content.Context
 import android.util.Log
 import com.example.agent.core.AgentLoop
+import com.example.agent.core.DeviceStatusProvider
 import com.example.agent.core.LoopPhase
 import com.example.agent.core.MediaPipeLlmInference
 import com.example.agent.di.MutableLlmInferenceWrapper
 import com.example.agent.mvi.AgentIntent
 import com.example.agent.mvi.AgentState
-import com.example.agent.mvi.isReadyForInput
 import com.example.agent.service.ResourceManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -33,46 +34,41 @@ import javax.inject.Singleton
  * # AgentOrchestrator — State Machine MVI del ciclo di vita dell'agente.
  *
  * Unica fonte di verità per lo stato dell'agente. Riceve [AgentIntent] via [dispatch],
- * aggiorna il [StateFlow] di [AgentState] e coordina l'[AgentLoop] per l'inferenza.
+ * aggiorna il [StateFlow] di [AgentState] e coordina [AgentLoop] per l'inferenza.
  *
- * ## Architettura interna
+ * ## Serializzazione via Channel
+ * Tutti gli intent vengono processati sequenzialmente da un singolo loop su
+ * `orchestratorScope`. Questo elimina ogni race condition su `currentInferenceJob`
+ * e `pendingConfirmationDeferred` senza Mutex.
  *
- * Gli intent vengono serializzati tramite un [Channel] interno (`intentChannel`).
- * Un unico loop di elaborazione (`processIntents`) consuma il canale sequenzialmente,
- * eliminando race condition sullo stato senza bisogno di `synchronized {}` o `Mutex`.
- *
+ * ## Flusso di conferma sicurezza (SafetyGuard)
+ * Quando [AgentLoop] rileva un'operazione pericolosa:
  * ```
- * dispatch(intent)                        processIntents loop
- *      │                                         │
- *      └──► intentChannel.send(intent) ──────────┤
- *                                        handleIntent(state, intent)
- *                                                │
- *                                        ┌── Sync transition ──► _state.value = newState
- *                                        └── Async work (launch) ─► coroutine aggiorna _state
+ * AgentLoop.run()
+ *   └─ onConfirmationRequired("reason") ← suspend, attende
+ *       └─ AgentOrchestrator
+ *           ├─ crea CompletableDeferred<Boolean>
+ *           ├─ transition(AwaitingConfirmation)    ← UI mostra dialog
+ *           └─ attende deferred.await()
+ *               ├─ ConfirmAction → deferred.complete(true)  → loop riprende
+ *               └─ DenyAction   → deferred.complete(false) → "cancelled"
  * ```
- *
- * ## Invarianti garantiti
- * 1. `_state` è aggiornato SOLO da `transition()`, mai direttamente.
- * 2. Un solo Job di inferenza (`currentInferenceJob`) può essere attivo alla volta.
- *    Un nuovo `UserPrompt` mentre un altro è in corso viene ignorato (logged).
- * 3. La cancellazione di `currentInferenceJob` porta sempre allo stato `Idle`.
- * 4. `CriticalError` è l'unico stato da cui l'agente non esce autonomamente.
  *
  * ## Thread safety
- * - `_state` è `MutableStateFlow` → write thread-safe, read concurrently safe.
- * - `currentInferenceJob` è accessibile solo dal loop di elaborazione (thread singolo).
- * - `lastUserPrompt` è `@Volatile` per permettere lettura sicura da observer esterni.
- *
- * @param agentLoop       Core del ciclo ReAct — iniettato come Singleton.
- * @param llmWrapper      Wrapper swappabile del motore LLM — gestisce l'init del modello.
- * @param resourceManager Gestore delle soglie RAM — controlla prima di ogni inferenza.
- * @param context         ApplicationContext — usato per costruire `MediaPipeLlmInference`.
+ * - `_state`: MutableStateFlow — write-safe da qualsiasi thread.
+ * - `currentInferenceJob`: acceduto solo dal loop di processing (thread singolo).
+ * - `pendingConfirmationDeferred`: @Volatile — scritto dal loop, completato
+ *   dal loop (via intentChannel). `await()` è chiamato dall'inference coroutine
+ *   su Dispatchers.IO — il `complete()` può arrivare da qualsiasi thread:
+ *   `CompletableDeferred` è coroutine-thread-safe per design.
+ * - `lastUserPrompt`: @Volatile — scritto dal loop, letto da observer esterni.
  */
 @Singleton
 class AgentOrchestrator @Inject constructor(
     private val agentLoop: AgentLoop,
     private val llmWrapper: MutableLlmInferenceWrapper,
     private val resourceManager: ResourceManager,
+    private val deviceStatusProvider: DeviceStatusProvider,
     @ApplicationContext private val context: Context
 ) {
     companion object {
@@ -81,51 +77,38 @@ class AgentOrchestrator @Inject constructor(
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // State — unica fonte di verità osservabile
+    // Reactive state
     // ─────────────────────────────────────────────────────────────────────────
 
     private val _state = MutableStateFlow<AgentState>(AgentState.Uninitialized)
-
-    /**
-     * Stream di stato osservabile da UI, Service e log.
-     * Garantisce replay dell'ultimo valore ai nuovi collector (semantica StateFlow).
-     */
     val state: StateFlow<AgentState> = _state.asStateFlow()
 
-    /**
-     * Stream delle risposte finali dell'agente (una per prompt completato).
-     * La UI usa questo per appendere i messaggi alla chat history.
-     * `replay = 0` → no history, solo i messaggi futuri dopo la subscription.
-     */
     private val _responses = MutableSharedFlow<String>(replay = 0, extraBufferCapacity = 8)
     val responses: SharedFlow<String> = _responses.asSharedFlow()
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Internal state
+    // Internal
     // ─────────────────────────────────────────────────────────────────────────
 
-    /**
-     * Scope con [SupervisorJob]: un Job figlio fallito (es. inferenza) non cancella
-     * il loop di elaborazione degli intent.
-     */
     private val orchestratorScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-
-    /**
-     * Canale FIFO per gli intent. [Channel.BUFFERED] con capacità fissa evita
-     * che `dispatch()` sospenda mai il chiamante (best-effort delivery).
-     * Se il canale è pieno (>32 intent in backlog), `trySend` scarta silenziosamente
-     * gli intent in eccesso — situazione che non dovrebbe mai verificarsi in uso normale.
-     */
     private val intentChannel = Channel<AgentIntent>(INTENT_CHANNEL_CAPACITY)
 
-    /** Job corrente di inferenza — `null` se l'agente è Idle. */
+    /** Job corrente di inferenza — null se Idle. */
     private var currentInferenceJob: Job? = null
+
+    /**
+     * Deferred usato per la conferma sicurezza.
+     * `null` quando nessuna conferma è in attesa.
+     * @Volatile: scritto e letto da coroutine su thread diversi.
+     */
+    @Volatile
+    private var pendingConfirmationDeferred: CompletableDeferred<Boolean>? = null
 
     @Volatile
     private var lastUserPrompt: String? = null
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Init — avvia il loop di processing
+    // Init
     // ─────────────────────────────────────────────────────────────────────────
 
     init {
@@ -134,64 +117,37 @@ class AgentOrchestrator @Inject constructor(
                 handleIntent(intent)
             }
         }
-        Log.d(TAG, "AgentOrchestrator initialized. Waiting for intents.")
+        Log.d(TAG, "AgentOrchestrator initialized.")
     }
 
     // ─────────────────────────────────────────────────────────────────────────
     // Public API
     // ─────────────────────────────────────────────────────────────────────────
 
-    /**
-     * Dispatcha un [AgentIntent] verso il loop di elaborazione.
-     *
-     * Thread-safe e non sospensiva: può essere chiamata dal Main Thread, da una
-     * coroutine IO o da un BroadcastReceiver senza rischio di blocco.
-     *
-     * Se il canale è saturo (improbabile), l'intent viene scartato con un warning.
-     */
     fun dispatch(intent: AgentIntent) {
         val result = intentChannel.trySend(intent)
         if (result.isFailure) {
-            Log.w(TAG, "Intent channel full — dropped: $intent")
+            Log.w(TAG, "Intent channel full — dropped: ${intent::class.simpleName}")
         }
     }
 
-    /**
-     * Cleanup: cancella lo scope al momento del destroy dell'Application.
-     * Chiamato automaticamente quando Hilt distrugge il SingletonComponent.
-     *
-     * NOTA: in pratica, per un'app Android il processo viene killato prima
-     * del destroy dell'Application. Questo è qui per correttezza e testabilità.
-     */
     fun destroy() {
         orchestratorScope.cancel("AgentOrchestrator destroyed")
         intentChannel.close()
-        Log.d(TAG, "Orchestrator destroyed — scope cancelled.")
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Intent handler (eseguito sequenzialmente nel loop)
+    // Intent handler (loop sequenziale — nessuna race condition)
     // ─────────────────────────────────────────────────────────────────────────
 
-    /**
-     * Punto centrale del riduttore di stato.
-     * Riceve l'intent corrente e lo stato attuale e decide la transizione.
-     *
-     * Eseguito sempre sullo stesso thread del loop (Dispatchers.Default, singolo worker
-     * perché è un `for {}` su un Channel), quindi nessuna race condition su
-     * `currentInferenceJob` o `lastUserPrompt`.
-     */
     private suspend fun handleIntent(intent: AgentIntent) {
-        val currentState = _state.value
-        Log.d(TAG, "Intent: ${intent::class.simpleName} | State: ${currentState::class.simpleName}")
+        val current = _state.value
+        Log.d(TAG, "Intent: ${intent::class.simpleName} | State: ${current::class.simpleName}")
 
         when (intent) {
 
             // ── InitializeModel ──────────────────────────────────────────────
             is AgentIntent.InitializeModel -> {
-                if (currentState.isBusy) {
-                    Log.w(TAG, "Model init requested during busy state — queued after current work.")
-                }
                 transition(AgentState.LoadingWeights(intent.modelPath))
                 loadModel(intent.modelPath)
             }
@@ -200,98 +156,123 @@ class AgentOrchestrator @Inject constructor(
             is AgentIntent.UserPrompt -> {
                 when {
                     !llmWrapper.isInitialized -> {
-                        val msg = "Il modello non è ancora caricato. Seleziona e scarica un modello prima."
                         transition(AgentState.CriticalError(
                             cause = IllegalStateException("Model not initialized"),
-                            message = msg,
+                            message = "Il modello non è caricato. Seleziona e scarica un modello prima.",
                             lastPrompt = intent.text
                         ))
                     }
-                    currentState.isBusy -> {
-                        Log.w(TAG, "UserPrompt '${intent.text.take(30)}...' ignored — agent is busy.")
+                    current.isBusy -> {
+                        Log.w(TAG, "UserPrompt ignored — agent busy in ${current::class.simpleName}")
                     }
                     else -> {
+                        // ── Constitution Rule 4.1 & 4.3 — Battery/RAM guard ─
+                        val deviceStatus = deviceStatusProvider.getStatus()
+
+                        if (deviceStatus.isCriticalBattery) {
+                            transition(AgentState.CriticalError(
+                                cause = IllegalStateException("Battery critical"),
+                                message = "Batteria critica (${deviceStatus.batteryLevelPercent}%). " +
+                                        "Inferenza sospesa dalla Constitution (Rule 4.1). Metti in carica.",
+                                lastPrompt = intent.text
+                            ))
+                            return
+                        }
+
                         val memCheck = resourceManager.checkMemoryAvailable(context)
                         if (!memCheck.isAvailable) {
                             transition(AgentState.CriticalError(
-                                cause = OutOfMemoryError("Insufficient RAM for inference"),
-                                message = "RAM insufficiente: ${memCheck.availableMb}MB liberi. ${memCheck.suggestion}",
+                                cause = OutOfMemoryError("Insufficient RAM"),
+                                message = "RAM insufficiente: ${memCheck.availableMb}MB. ${memCheck.suggestion}",
                                 lastPrompt = intent.text
                             ))
-                        } else {
-                            if (memCheck.suggestion.isNotEmpty()) {
-                                Log.w(TAG, "Memory warning: ${memCheck.suggestion}")
-                            }
-                            lastUserPrompt = intent.text
-                            launchInference(intent.text)
+                            return
                         }
+
+                        if (memCheck.suggestion.isNotEmpty()) Log.w(TAG, memCheck.suggestion)
+
+                        lastUserPrompt = intent.text
+                        launchInference(intent.text, deviceStatus.isLowBattery)
                     }
                 }
             }
 
             // ── SystemTrigger ────────────────────────────────────────────────
             is AgentIntent.SystemTrigger -> {
-                val prompt = buildString {
-                    append("[System Trigger from ${intent.source}]")
-                    if (intent.payload.isNotBlank()) append("\nPayload: ${intent.payload}")
-                }
-                // Dispatch ricorsivo attraverso il canale per rispettare la serializzazione
+                val prompt = "[System: ${intent.source}]${
+                    if (intent.payload.isNotBlank()) "\nPayload: ${intent.payload}" else ""
+                }"
                 dispatch(AgentIntent.UserPrompt(prompt))
             }
 
             // ── CancelInference ──────────────────────────────────────────────
             is AgentIntent.CancelInference -> {
-                if (currentInferenceJob?.isActive == true) {
-                    currentInferenceJob!!.cancel("User requested cancellation")
-                    Log.d(TAG, "Inference job cancelled by user.")
-                    // Lo stato Idle viene settato nel finally del launchInference
+                // Completa il deferred di conferma con false (come DenyAction)
+                // per sbloccare l'inference coroutine se stava aspettando
+                pendingConfirmationDeferred?.let {
+                    it.complete(false)
+                    pendingConfirmationDeferred = null
+                }
+                currentInferenceJob?.cancel("User cancelled")
+                // Lo stato Idle è settato nel finally del launchInference
+            }
+
+            // ── ConfirmAction ────────────────────────────────────────────────
+            is AgentIntent.ConfirmAction -> {
+                val deferred = pendingConfirmationDeferred
+                if (deferred != null && !deferred.isCompleted) {
+                    deferred.complete(true)
+                    pendingConfirmationDeferred = null
+                    Log.d(TAG, "User CONFIRMED pending safety operation.")
                 } else {
-                    Log.d(TAG, "CancelInference received but no active inference job.")
+                    Log.w(TAG, "ConfirmAction received but no pending confirmation.")
+                }
+            }
+
+            // ── DenyAction ───────────────────────────────────────────────────
+            is AgentIntent.DenyAction -> {
+                val deferred = pendingConfirmationDeferred
+                if (deferred != null && !deferred.isCompleted) {
+                    deferred.complete(false)
+                    pendingConfirmationDeferred = null
+                    Log.d(TAG, "User DENIED pending safety operation.")
+                } else {
+                    Log.w(TAG, "DenyAction received but no pending confirmation.")
                 }
             }
 
             // ── RetryLastPrompt ──────────────────────────────────────────────
             is AgentIntent.RetryLastPrompt -> {
                 val prompt = lastUserPrompt
-                if (prompt != null && currentState is AgentState.CriticalError) {
-                    Log.d(TAG, "Retrying last prompt: '${prompt.take(40)}'")
+                if (prompt != null && current is AgentState.CriticalError) {
                     dispatch(AgentIntent.UserPrompt(prompt))
                 } else {
-                    Log.w(TAG, "RetryLastPrompt ignored: no last prompt or not in CriticalError state.")
+                    Log.w(TAG, "RetryLastPrompt: no prompt to retry or not in CriticalError.")
                 }
             }
 
             // ── MemoryWarning ────────────────────────────────────────────────
             is AgentIntent.MemoryWarning -> {
                 Log.w(TAG, "MemoryWarning: ${intent.availableMb}MB available.")
-                // Se idle, nessuna azione necessaria.
-                // Se in inferenza, il ResourceManager verrà consultato alla prossima iterazione.
-                // In futuro: triggera il pruning aggressivo o notifica la UI.
-                if (intent.availableMb < ResourceManager.MIN_FREE_RAM_MB && currentState.isBusy) {
-                    Log.e(TAG, "Critical RAM while busy — cancelling inference to prevent OOM.")
+                if (intent.availableMb < ResourceManager.MIN_FREE_RAM_MB && current.isBusy) {
+                    Log.e(TAG, "RAM critically low during inference — cancelling to prevent OOM.")
                     dispatch(AgentIntent.CancelInference)
                 }
             }
 
             // ── ToolExecutionResult ──────────────────────────────────────────
-            // Emesso internamente dall'AgentLoop via onPhaseChange callback.
-            // Arriva qui solo per aggiornare lo stato visibile nella UI/notifica.
             is AgentIntent.ToolExecutionResult -> {
-                // Transizione gestita dall'AgentLoop callback — nessuna azione aggiuntiva qui
-                Log.d(TAG, "Tool '${intent.toolName}' observation: ${intent.observation.take(80)}")
+                Log.d(TAG, "Tool '${intent.toolName}' result: ${intent.observation.take(80)}")
             }
         }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Private: model loading
+    // Model loading
     // ─────────────────────────────────────────────────────────────────────────
 
     private suspend fun loadModel(modelPath: String) = withContext(Dispatchers.IO) {
         try {
-            Log.d(TAG, "Loading model from: $modelPath")
-
-            // Controlla RAM prima del mmap
             val memCheck = resourceManager.canLoadModel(context, modelPath)
             if (!memCheck.isAvailable) {
                 transition(AgentState.CriticalError(
@@ -300,33 +281,26 @@ class AgentOrchestrator @Inject constructor(
                 ))
                 return@withContext
             }
-
-            // Crea il nuovo engine MediaPipe — mmap avviene internamente in LlmInference.create()
             val newEngine = MediaPipeLlmInference(context, modelPath)
             llmWrapper.initialize(newEngine)
-
-            Log.d(TAG, "Model loaded successfully.")
+            Log.d(TAG, "Model loaded: $modelPath")
             transition(AgentState.Idle)
-
         } catch (e: Exception) {
-            Log.e(TAG, "Model loading failed: ${e.message}", e)
-            transition(AgentState.CriticalError(
-                cause = e,
-                message = "Caricamento modello fallito: ${e.message}"
-            ))
+            Log.e(TAG, "Model load failed: ${e.message}", e)
+            transition(AgentState.CriticalError(e, "Caricamento modello fallito: ${e.message}"))
         }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Private: inference launch
+    // Inference launch
     // ─────────────────────────────────────────────────────────────────────────
 
-    /**
-     * Lancia il ciclo ReAct in un [Job] separato con [SupervisorJob] come padre.
-     * Il Job è cancellabile autonomamente (via [AgentIntent.CancelInference])
-     * senza cancellare il loop di elaborazione degli intent.
-     */
-    private fun launchInference(prompt: String) {
+    private fun launchInference(prompt: String, isLowBattery: Boolean) {
+        // Constitution Rule 4.2: low battery → cap iterations implicitly via AgentLoop
+        if (isLowBattery) {
+            Log.w(TAG, "Low battery — inference will be limited to 2 ReAct iterations by Constitution Rule 4.2.")
+        }
+
         currentInferenceJob = orchestratorScope.launch(Dispatchers.IO) {
             transition(AgentState.Reasoning(currentPrompt = prompt, iteration = 0))
             try {
@@ -335,26 +309,35 @@ class AgentOrchestrator @Inject constructor(
                     onPhaseChange = { phase ->
                         when (phase) {
                             is LoopPhase.Thinking -> transition(
-                                AgentState.Reasoning(
-                                    currentPrompt = prompt,
-                                    iteration = phase.iteration
-                                )
+                                AgentState.Reasoning(prompt, phase.iteration)
                             )
-                            is LoopPhase.InvokingTool -> {
-                                transition(
-                                    AgentState.ExecutingTool(
-                                        toolName = phase.toolName,
-                                        parameters = phase.parameters,
-                                        iteration = phase.iteration
-                                    )
-                                )
-                                // Notifica anche via intent per observer esterni (logging, analytics)
-                                dispatch(AgentIntent.ToolExecutionResult(
-                                    toolName = phase.toolName,
-                                    observation = "(in progress)"
-                                ))
-                            }
+                            is LoopPhase.InvokingTool -> transition(
+                                AgentState.ExecutingTool(phase.toolName, phase.parameters, phase.iteration)
+                            )
                         }
+                    },
+                    onConfirmationRequired = { reason ->
+                        // Costruisce il ControllableDeferred e sospende fino alla risposta dell'utente
+                        val deferred = CompletableDeferred<Boolean>()
+                        pendingConfirmationDeferred = deferred
+
+                        // Estrai toolName dall'ultimo stato ExecutingTool se disponibile
+                        val toolName = (_state.value as? AgentState.ExecutingTool)?.toolName ?: "UnknownTool"
+                        transition(AgentState.AwaitingConfirmation(
+                            reason = reason,
+                            operationSummary = reason,
+                            toolName = toolName
+                        ))
+
+                        Log.d(TAG, "Waiting for user confirmation on '$toolName'...")
+                        val confirmed = deferred.await()  // ← sospeso qui finché ConfirmAction/DenyAction
+                        Log.d(TAG, "Confirmation result: $confirmed")
+
+                        // Ripristina lo stato Reasoning se ancora in AwaitingConfirmation
+                        if (_state.value is AgentState.AwaitingConfirmation) {
+                            transition(AgentState.Reasoning(prompt, 0))
+                        }
+                        confirmed
                     }
                 )
 
@@ -362,14 +345,13 @@ class AgentOrchestrator @Inject constructor(
                 transition(AgentState.Idle)
 
             } catch (e: CancellationException) {
-                Log.d(TAG, "Inference coroutine cancelled — transitioning to Idle.")
+                Log.d(TAG, "Inference cancelled.")
                 transition(AgentState.Idle)
-                // Non rilanciare: è una cancellazione normale
             } catch (e: Exception) {
-                Log.e(TAG, "Inference failed: ${e.message}", e)
+                Log.e(TAG, "Inference error: ${e.message}", e)
                 transition(AgentState.CriticalError(
                     cause = e,
-                    message = "Errore durante l'inferenza: ${e.message ?: "Errore sconosciuto"}",
+                    message = "Errore inferenza: ${e.message ?: "Errore sconosciuto"}",
                     lastPrompt = prompt
                 ))
             }
@@ -377,26 +359,19 @@ class AgentOrchestrator @Inject constructor(
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Private: state transition
+    // State transition
     // ─────────────────────────────────────────────────────────────────────────
 
-    /**
-     * Unico punto di aggiornamento dello stato. Logga ogni transizione per debugging.
-     * `MutableStateFlow.value =` è thread-safe per scritture concorrenti.
-     */
     private fun transition(newState: AgentState) {
         val old = _state.value
-        if (old == newState) return // Evita emissioni ridondanti (StateFlow le filtra comunque)
+        if (old == newState) return
         _state.value = newState
-        Log.d(TAG, "State: ${old::class.simpleName} → ${newState::class.simpleName}")
+        Log.d(TAG, "▶ ${old::class.simpleName} → ${newState::class.simpleName}")
     }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Extension su AgentState (uso interno)
-    // ─────────────────────────────────────────────────────────────────────────
 
     private val AgentState.isBusy: Boolean
         get() = this is AgentState.Reasoning
                 || this is AgentState.ExecutingTool
                 || this is AgentState.LoadingWeights
+                || this is AgentState.AwaitingConfirmation
 }
