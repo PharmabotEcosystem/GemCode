@@ -16,8 +16,11 @@ import {
   Moon,
   Copy,
   Check,
+  Server,
+  Wifi,
+  WifiOff,
+  AlertCircle,
 } from 'lucide-react';
-import { GoogleGenAI } from '@google/genai';
 import { motion, AnimatePresence } from 'motion/react';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -32,26 +35,25 @@ interface Message {
 interface Conversation {
   id: string;
   title: string;
-  preview: string;
   timestamp: Date;
 }
 
-interface Settings {
-  model: string;
+type InferenceBackend = 'window-ai' | 'ollama';
+
+interface AppSettings {
+  backend: InferenceBackend;
+  ollamaHost: string;
+  ollamaModel: string;
   temperature: number;
   systemPrompt: string;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const MODELS = [
-  { id: 'gemini-2.5-flash-preview-05-20', label: 'Gemini 2.5 Flash', badge: 'Latest' },
-  { id: 'gemini-2.0-flash',               label: 'Gemini 2.0 Flash', badge: null },
-  { id: 'gemini-1.5-flash',               label: 'Gemini 1.5 Flash', badge: null },
-];
-
-const DEFAULT_SETTINGS: Settings = {
-  model: 'gemini-2.5-flash-preview-05-20',
+const DEFAULT_SETTINGS: AppSettings = {
+  backend: 'ollama',
+  ollamaHost: 'http://localhost:11434',
+  ollamaModel: 'gemma3:4b',
   temperature: 0.7,
   systemPrompt:
     'Sei GemCode Assistant, un assistente AI utile, preciso e conciso. ' +
@@ -66,13 +68,149 @@ const SUGGESTION_CHIPS = [
   'Crea uno script Python per analizzare un CSV',
 ];
 
-// ─── Gemini API ───────────────────────────────────────────────────────────────
+// ─── Window AI types (Chrome 128+ built-in Gemini Nano) ──────────────────────
 
-function buildContents(messages: Message[]) {
-  return messages.map(m => ({
-    role: m.role,
-    parts: [{ text: m.text }],
-  }));
+declare global {
+  interface Window {
+    ai?: {
+      languageModel?: {
+        capabilities(): Promise<{ available: 'readily' | 'after-download' | 'no' }>;
+        create(options?: {
+          systemPrompt?: string;
+          temperature?: number;
+        }): Promise<{
+          promptStreaming(prompt: string): ReadableStream<string>;
+          destroy(): void;
+        }>;
+      };
+    };
+  }
+}
+
+// ─── Inference engines ────────────────────────────────────────────────────────
+
+/**
+ * Chiama l'API Ollama locale (http://localhost:11434/api/chat).
+ * Ritorna un AsyncGenerator che emette i token man mano che arrivano.
+ */
+async function* ollamaStream(
+  host: string,
+  model: string,
+  messages: { role: string; content: string }[],
+  temperature: number,
+  signal: AbortSignal
+): AsyncGenerator<string> {
+  const url = `${host.replace(/\/$/, '')}/api/chat`;
+
+  let resp: Response;
+  try {
+    resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, messages, stream: true, options: { temperature } }),
+      signal,
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    throw new Error(
+      `Impossibile raggiungere Ollama su ${host}. ` +
+        'Assicurati che Ollama sia in esecuzione (`ollama serve`) e ' +
+        `che il modello "${model}" sia scaricato (\`ollama pull ${model}\`). Dettaglio: ${msg}`
+    );
+  }
+
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => '');
+    throw new Error(`Ollama HTTP ${resp.status}: ${body}`);
+  }
+
+  const reader = resp.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const json = JSON.parse(line);
+        const token: string = json?.message?.content ?? '';
+        if (token) yield token;
+        if (json.done) return;
+      } catch {
+        // ignora linee malformate
+      }
+    }
+  }
+}
+
+/**
+ * Usa window.ai.languageModel (Chrome 128+ con Gemini Nano integrato).
+ * Ritorna un AsyncGenerator che emette chunk di testo incrementali.
+ */
+async function* windowAiStream(
+  userPrompt: string,
+  systemPrompt: string,
+  temperature: number,
+  signal: AbortSignal
+): AsyncGenerator<string> {
+  const ai = window.ai?.languageModel;
+  if (!ai) throw new Error('window.ai non disponibile. Usa Chrome 128+ e abilita chrome://flags/#prompt-api-for-gemini-nano');
+
+  const capabilities = await ai.capabilities();
+  if (capabilities.available === 'no') {
+    throw new Error('Gemini Nano non è supportato su questo dispositivo.');
+  }
+  if (capabilities.available === 'after-download') {
+    throw new Error('Gemini Nano deve ancora essere scaricato. Attendi il completamento del download in Chrome.');
+  }
+
+  const session = await ai.create({ systemPrompt, temperature });
+
+  try {
+    const stream = session.promptStreaming(userPrompt);
+    const reader = stream.getReader();
+    let lastLength = 0;
+
+    while (true) {
+      if (signal.aborted) break;
+      const { done, value } = await reader.read();
+      if (done) break;
+      // window.ai emette il testo accumulato — estraiamo solo il delta
+      const delta = value.slice(lastLength);
+      lastLength = value.length;
+      if (delta) yield delta;
+    }
+    reader.releaseLock();
+  } finally {
+    session.destroy();
+  }
+}
+
+// ─── Backend status check ─────────────────────────────────────────────────────
+
+async function checkOllamaStatus(host: string): Promise<'online' | 'offline'> {
+  try {
+    const resp = await fetch(`${host.replace(/\/$/, '')}/api/tags`, { signal: AbortSignal.timeout(2000) });
+    return resp.ok ? 'online' : 'offline';
+  } catch {
+    return 'offline';
+  }
+}
+
+async function checkWindowAiStatus(): Promise<'available' | 'unavailable'> {
+  try {
+    const cap = await window.ai?.languageModel?.capabilities();
+    return cap?.available === 'readily' ? 'available' : 'unavailable';
+  } catch {
+    return 'unavailable';
+  }
 }
 
 // ─── App ──────────────────────────────────────────────────────────────────────
@@ -83,21 +221,31 @@ export default function App() {
   const [isLoading, setIsLoading]         = useState(false);
   const [sidebarOpen, setSidebarOpen]     = useState(true);
   const [settingsOpen, setSettingsOpen]   = useState(false);
-  const [settings, setSettings]           = useState<Settings>(DEFAULT_SETTINGS);
+  const [settings, setSettings]           = useState<AppSettings>(DEFAULT_SETTINGS);
   const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [activeConvId, setActiveConvId]   = useState<string | null>(null);
   const [error, setError]                 = useState<string | null>(null);
+  const [ollamaStatus, setOllamaStatus]   = useState<'online' | 'offline' | 'checking'>('checking');
+  const [windowAiStatus, setWindowAiStatus] = useState<'available' | 'unavailable' | 'checking'>('checking');
 
-  const messagesEndRef  = useRef<HTMLDivElement>(null);
-  const inputRef        = useRef<HTMLTextAreaElement>(null);
-  const abortRef        = useRef<boolean>(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const inputRef       = useRef<HTMLTextAreaElement>(null);
+  const abortRef       = useRef<AbortController | null>(null);
 
-  // Scroll al fondo quando arrivano nuovi messaggi
+  // Check backend status on mount and when settings change
+  useEffect(() => {
+    setOllamaStatus('checking');
+    checkOllamaStatus(settings.ollamaHost).then(setOllamaStatus);
+  }, [settings.ollamaHost]);
+
+  useEffect(() => {
+    setWindowAiStatus('checking');
+    checkWindowAiStatus().then(setWindowAiStatus);
+  }, []);
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Auto-resize textarea
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value);
     e.target.style.height = 'auto';
@@ -106,16 +254,12 @@ export default function App() {
 
   const newChat = useCallback(() => {
     if (messages.length > 0) {
-      const conv: Conversation = {
-        id: Date.now().toString(),
-        title: messages[0]?.text.slice(0, 40) || 'Nuova conversazione',
-        preview: messages[messages.length - 1]?.text.slice(0, 60) || '',
-        timestamp: new Date(),
-      };
-      setConversations(prev => [conv, ...prev.slice(0, 19)]);
+      setConversations(prev => [
+        { id: Date.now().toString(), title: messages[0].text.slice(0, 45), timestamp: new Date() },
+        ...prev.slice(0, 19),
+      ]);
     }
     setMessages([]);
-    setActiveConvId(null);
     setError(null);
     setTimeout(() => inputRef.current?.focus(), 100);
   }, [messages]);
@@ -126,72 +270,65 @@ export default function App() {
 
     setError(null);
     setInput('');
-    if (inputRef.current) {
-      inputRef.current.style.height = 'auto';
-    }
+    if (inputRef.current) inputRef.current.style.height = 'auto';
 
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      setError('GEMINI_API_KEY non configurata. Aggiungila al file .env.');
-      return;
-    }
-
-    const userMsg: Message = {
-      id: `user-${Date.now()}`,
-      role: 'user',
-      text: trimmed,
-    };
-
-    const modelMsgId = `model-${Date.now()}`;
-    const modelMsg: Message = {
-      id: modelMsgId,
-      role: 'model',
-      text: '',
-      isStreaming: true,
-    };
+    const userMsg: Message = { id: `u-${Date.now()}`, role: 'user', text: trimmed };
+    const modelId = `m-${Date.now()}`;
+    const modelMsg: Message = { id: modelId, role: 'model', text: '', isStreaming: true };
 
     setMessages(prev => [...prev, userMsg, modelMsg]);
     setIsLoading(true);
-    abortRef.current = false;
+
+    const controller = new AbortController();
+    abortRef.current = controller;
 
     try {
-      const ai = new GoogleGenAI({ apiKey });
-      const history = buildContents([...messages, userMsg]);
+      const history = [...messages, userMsg].map(m => ({
+        role: m.role === 'model' ? 'assistant' : 'user',
+        content: m.text,
+      }));
 
-      const stream = await ai.models.generateContentStream({
-        model: settings.model,
-        contents: history,
-        config: {
-          temperature: settings.temperature,
-          systemInstruction: settings.systemPrompt,
-        },
-      });
+      let gen: AsyncGenerator<string>;
 
-      let accumulated = '';
-      for await (const chunk of stream) {
-        if (abortRef.current) break;
-        const chunkText = chunk.text ?? '';
-        accumulated += chunkText;
-        setMessages(prev =>
-          prev.map(m =>
-            m.id === modelMsgId ? { ...m, text: accumulated } : m
-          )
+      if (settings.backend === 'window-ai') {
+        gen = windowAiStream(trimmed, settings.systemPrompt, settings.temperature, controller.signal);
+      } else {
+        // Ollama: prepend system message
+        const ollamaMessages = [
+          { role: 'system', content: settings.systemPrompt },
+          ...history,
+        ];
+        gen = ollamaStream(
+          settings.ollamaHost,
+          settings.ollamaModel,
+          ollamaMessages,
+          settings.temperature,
+          controller.signal
         );
       }
 
-      setMessages(prev =>
-        prev.map(m =>
-          m.id === modelMsgId ? { ...m, isStreaming: false } : m
-        )
-      );
+      let accumulated = '';
+      for await (const token of gen) {
+        if (controller.signal.aborted) break;
+        accumulated += token;
+        setMessages(prev =>
+          prev.map(m => (m.id === modelId ? { ...m, text: accumulated } : m))
+        );
+      }
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Errore sconosciuto';
-      setMessages(prev => prev.filter(m => m.id !== modelMsgId));
-      setError(`Errore: ${message}`);
+      const msg = err instanceof Error ? err.message : String(err);
+      setMessages(prev => prev.filter(m => m.id !== modelId));
+      setError(msg);
     } finally {
       setIsLoading(false);
+      setMessages(prev => prev.map(m => (m.id === modelId ? { ...m, isStreaming: false } : m)));
+      abortRef.current = null;
     }
   }, [isLoading, messages, settings]);
+
+  const stopGeneration = () => {
+    abortRef.current?.abort();
+  };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -200,13 +337,10 @@ export default function App() {
     }
   };
 
-  const stopGeneration = () => {
-    abortRef.current = true;
-    setIsLoading(false);
-    setMessages(prev =>
-      prev.map(m => m.isStreaming ? { ...m, isStreaming: false } : m)
-    );
-  };
+  const activeBackendLabel =
+    settings.backend === 'window-ai'
+      ? 'Gemini Nano (locale)'
+      : `${settings.ollamaModel} · Ollama`;
 
   return (
     <div className="flex h-screen bg-base text-primary overflow-hidden">
@@ -222,13 +356,11 @@ export default function App() {
             transition={{ duration: 0.2 }}
             className="flex flex-col bg-surface border-r border-border overflow-hidden shrink-0"
           >
-            {/* Logo */}
             <div className="flex items-center gap-3 px-4 py-5 border-b border-border">
               <GemcodeLogo />
               <span className="font-semibold text-primary text-base tracking-tight">GemCode</span>
             </div>
 
-            {/* New Chat */}
             <div className="px-3 py-3">
               <button
                 onClick={newChat}
@@ -239,38 +371,30 @@ export default function App() {
               </button>
             </div>
 
-            {/* Conversation history */}
             <div className="flex-1 overflow-y-auto px-3 pb-3 space-y-0.5">
               {conversations.length > 0 && (
-                <p className="px-3 py-2 text-xs font-medium text-muted uppercase tracking-wider">
-                  Recenti
-                </p>
+                <p className="px-3 py-2 text-xs font-medium text-muted uppercase tracking-wider">Recenti</p>
               )}
               {conversations.map(conv => (
-                <button
+                <div
                   key={conv.id}
-                  onClick={() => setActiveConvId(conv.id)}
-                  className={`w-full text-left px-3 py-2.5 rounded-xl text-sm transition-colors group ${
-                    activeConvId === conv.id
-                      ? 'bg-elevated text-primary'
-                      : 'text-secondary hover:bg-elevated/60 hover:text-primary'
-                  }`}
+                  className="flex items-start gap-2 px-3 py-2.5 rounded-xl text-sm text-secondary hover:bg-elevated/60 hover:text-primary cursor-default transition-colors"
                 >
-                  <div className="flex items-start gap-2">
-                    <MessageSquare className="w-3.5 h-3.5 mt-0.5 shrink-0 text-muted" />
-                    <span className="truncate leading-snug">{conv.title}</span>
-                  </div>
-                </button>
+                  <MessageSquare className="w-3.5 h-3.5 mt-0.5 shrink-0 text-muted" />
+                  <span className="truncate leading-snug">{conv.title}</span>
+                </div>
               ))}
               {conversations.length === 0 && (
-                <p className="px-3 py-4 text-xs text-muted text-center">
-                  Le conversazioni appariranno qui
-                </p>
+                <p className="px-3 py-4 text-xs text-muted text-center">Le conversazioni appariranno qui</p>
               )}
             </div>
 
-            {/* Bottom actions */}
             <div className="border-t border-border px-3 py-3 space-y-0.5">
+              {/* Backend status */}
+              <div className="px-3 py-2 flex items-center gap-2 text-xs text-muted">
+                <BackendStatusDot backend={settings.backend} ollamaStatus={ollamaStatus} windowAiStatus={windowAiStatus} />
+                <span className="truncate">{activeBackendLabel}</span>
+              </div>
               <button
                 onClick={() => setSettingsOpen(true)}
                 className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-secondary hover:bg-elevated hover:text-primary transition-colors"
@@ -286,27 +410,24 @@ export default function App() {
       {/* ── Main ────────────────────────────────────────────────────────────── */}
       <div className="flex-1 flex flex-col min-w-0">
 
-        {/* Top bar */}
         <header className="flex items-center justify-between px-4 py-3 border-b border-border bg-surface/80 backdrop-blur shrink-0">
           <div className="flex items-center gap-2">
             <button
               onClick={() => setSidebarOpen(v => !v)}
               className="p-2 rounded-lg text-secondary hover:bg-elevated hover:text-primary transition-colors"
-              aria-label="Toggle sidebar"
             >
               {sidebarOpen ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
             </button>
             {!sidebarOpen && <GemcodeLogo />}
           </div>
 
-          {/* Model badge */}
           <div className="flex items-center gap-2">
             <button
               onClick={() => setSettingsOpen(true)}
               className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-elevated border border-border text-xs font-medium text-secondary hover:text-primary hover:border-accent/50 transition-colors"
             >
-              <Cpu className="w-3.5 h-3.5" />
-              {MODELS.find(m => m.id === settings.model)?.label ?? settings.model}
+              <BackendStatusDot backend={settings.backend} ollamaStatus={ollamaStatus} windowAiStatus={windowAiStatus} />
+              {activeBackendLabel}
             </button>
             {messages.length > 0 && (
               <button
@@ -320,39 +441,24 @@ export default function App() {
           </div>
         </header>
 
-        {/* Chat area */}
         <main className="flex-1 overflow-y-auto">
           {messages.length === 0 ? (
-            <WelcomeScreen
-              onSuggestion={(s) => sendMessage(s)}
-            />
+            <WelcomeScreen onSuggestion={sendMessage} />
           ) : (
             <div className="max-w-3xl mx-auto px-4 py-8 space-y-6">
-              {messages.map(msg => (
-                <MessageBubble key={msg.id} message={msg} />
-              ))}
-              {error && (
-                <div className="flex items-start gap-3 text-sm text-red-400 bg-red-400/10 border border-red-400/20 rounded-2xl px-4 py-3">
-                  <Info className="w-4 h-4 shrink-0 mt-0.5" />
-                  {error}
-                </div>
-              )}
+              {messages.map(msg => <MessageBubble key={msg.id} message={msg} />)}
+              {error && <ErrorBanner message={error} />}
               <div ref={messagesEndRef} />
             </div>
           )}
         </main>
 
-        {/* Error (welcome screen) */}
         {error && messages.length === 0 && (
           <div className="max-w-3xl mx-auto w-full px-4 pb-2">
-            <div className="flex items-start gap-3 text-sm text-red-400 bg-red-400/10 border border-red-400/20 rounded-2xl px-4 py-3">
-              <Info className="w-4 h-4 shrink-0 mt-0.5" />
-              {error}
-            </div>
+            <ErrorBanner message={error} />
           </div>
         )}
 
-        {/* Input bar */}
         <div className="shrink-0 px-4 pb-6 pt-2">
           <div className="max-w-3xl mx-auto">
             <div className="relative flex items-end gap-3 bg-elevated border border-border rounded-2xl px-4 py-3 focus-within:border-accent/50 transition-colors shadow-sm">
@@ -366,7 +472,7 @@ export default function App() {
                 className="flex-1 bg-transparent resize-none text-sm text-primary placeholder:text-muted focus:outline-none leading-relaxed max-h-48"
                 disabled={isLoading}
               />
-              <div className="flex items-center gap-2 shrink-0 pb-0.5">
+              <div className="flex items-center shrink-0 pb-0.5">
                 {isLoading ? (
                   <button
                     onClick={stopGeneration}
@@ -388,7 +494,7 @@ export default function App() {
               </div>
             </div>
             <p className="text-center text-xs text-muted mt-2">
-              GemCode · {MODELS.find(m => m.id === settings.model)?.label} · Shift+Enter per nuova riga
+              GemCode · {activeBackendLabel} · Shift+Enter per nuova riga
             </p>
           </div>
         </div>
@@ -398,7 +504,6 @@ export default function App() {
       <AnimatePresence>
         {settingsOpen && (
           <>
-            {/* Backdrop */}
             <motion.div
               key="backdrop"
               initial={{ opacity: 0 }}
@@ -407,9 +512,8 @@ export default function App() {
               className="fixed inset-0 bg-black/40 z-40"
               onClick={() => setSettingsOpen(false)}
             />
-            {/* Panel */}
             <motion.div
-              key="settings-panel"
+              key="panel"
               initial={{ x: '100%' }}
               animate={{ x: 0 }}
               exit={{ x: '100%' }}
@@ -428,56 +532,89 @@ export default function App() {
 
               <div className="flex-1 overflow-y-auto px-5 py-4 space-y-6">
 
-                {/* Model */}
-                <SettingsSection icon={<Cpu className="w-4 h-4" />} title="Modello">
+                {/* Backend selector */}
+                <SettingsSection icon={<Cpu className="w-4 h-4" />} title="Motore di inferenza">
                   <div className="space-y-2">
-                    {MODELS.map(m => (
-                      <label
-                        key={m.id}
-                        className={`flex items-center justify-between px-3 py-2.5 rounded-xl border cursor-pointer transition-colors ${
-                          settings.model === m.id
-                            ? 'border-accent/60 bg-accent/10 text-primary'
-                            : 'border-border hover:border-accent/30 text-secondary hover:text-primary'
-                        }`}
-                      >
-                        <div className="flex items-center gap-3">
-                          <input
-                            type="radio"
-                            name="model"
-                            value={m.id}
-                            checked={settings.model === m.id}
-                            onChange={() => setSettings(s => ({ ...s, model: m.id }))}
-                            className="accent-accent"
-                          />
-                          <span className="text-sm font-medium">{m.label}</span>
-                        </div>
-                        {m.badge && (
-                          <span className="text-xs px-2 py-0.5 rounded-full bg-accent/20 text-accent font-medium">
-                            {m.badge}
-                          </span>
-                        )}
-                      </label>
-                    ))}
+                    <BackendCard
+                      active={settings.backend === 'ollama'}
+                      onClick={() => setSettings(s => ({ ...s, backend: 'ollama' }))}
+                      icon={<Server className="w-4 h-4" />}
+                      title="Ollama"
+                      description="Server locale — qualsiasi modello"
+                      status={ollamaStatus === 'online' ? 'ok' : ollamaStatus === 'offline' ? 'error' : 'checking'}
+                      statusLabel={ollamaStatus === 'online' ? 'Online' : ollamaStatus === 'offline' ? 'Non raggiungibile' : '…'}
+                    />
+                    <BackendCard
+                      active={settings.backend === 'window-ai'}
+                      onClick={() => setSettings(s => ({ ...s, backend: 'window-ai' }))}
+                      icon={<Sparkles className="w-4 h-4" />}
+                      title="Chrome AI"
+                      description="Gemini Nano integrato nel browser"
+                      status={windowAiStatus === 'available' ? 'ok' : windowAiStatus === 'unavailable' ? 'error' : 'checking'}
+                      statusLabel={windowAiStatus === 'available' ? 'Disponibile' : windowAiStatus === 'unavailable' ? 'Non disponibile' : '…'}
+                    />
                   </div>
                 </SettingsSection>
 
+                {/* Ollama config */}
+                {settings.backend === 'ollama' && (
+                  <SettingsSection icon={<Server className="w-4 h-4" />} title="Configurazione Ollama">
+                    <div className="space-y-3">
+                      <div>
+                        <label className="text-xs text-muted mb-1.5 block">Host</label>
+                        <input
+                          type="text"
+                          value={settings.ollamaHost}
+                          onChange={e => setSettings(s => ({ ...s, ollamaHost: e.target.value }))}
+                          className="w-full bg-elevated border border-border rounded-xl px-3 py-2 text-sm text-primary focus:border-accent/50 focus:outline-none transition-colors"
+                          placeholder="http://localhost:11434"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-muted mb-1.5 block">Modello</label>
+                        <input
+                          type="text"
+                          value={settings.ollamaModel}
+                          onChange={e => setSettings(s => ({ ...s, ollamaModel: e.target.value }))}
+                          className="w-full bg-elevated border border-border rounded-xl px-3 py-2 text-sm text-primary focus:border-accent/50 focus:outline-none transition-colors"
+                          placeholder="gemma3:4b"
+                        />
+                        <p className="text-xs text-muted mt-1.5">
+                          Es: gemma3:4b · llama3.2 · phi4-mini · qwen2.5
+                        </p>
+                      </div>
+                      {ollamaStatus === 'offline' && (
+                        <div className="rounded-xl bg-red-500/10 border border-red-500/20 px-3 py-2.5 text-xs text-red-400 space-y-1">
+                          <p className="font-medium">Ollama non raggiungibile</p>
+                          <p className="text-red-400/80">Avvia il server con: <code className="font-mono bg-red-500/10 px-1 rounded">ollama serve</code></p>
+                          <p className="text-red-400/80">Scarica il modello: <code className="font-mono bg-red-500/10 px-1 rounded">ollama pull {settings.ollamaModel}</code></p>
+                        </div>
+                      )}
+                    </div>
+                  </SettingsSection>
+                )}
+
+                {/* Chrome AI info */}
+                {settings.backend === 'window-ai' && windowAiStatus === 'unavailable' && (
+                  <div className="rounded-xl bg-amber-500/10 border border-amber-500/20 px-3 py-2.5 text-xs text-amber-400 space-y-1">
+                    <p className="font-medium">Gemini Nano non disponibile</p>
+                    <p className="text-amber-400/80">Richiede Chrome 128+ su desktop.</p>
+                    <p className="text-amber-400/80">Abilita: <code className="font-mono bg-amber-500/10 px-1 rounded">chrome://flags/#prompt-api-for-gemini-nano</code></p>
+                  </div>
+                )}
+
                 {/* Temperature */}
                 <SettingsSection icon={<Thermometer className="w-4 h-4" />} title="Temperatura">
-                  <div className="space-y-2">
-                    <input
-                      type="range"
-                      min={0}
-                      max={1}
-                      step={0.05}
-                      value={settings.temperature}
-                      onChange={e => setSettings(s => ({ ...s, temperature: parseFloat(e.target.value) }))}
-                      className="w-full accent-accent"
-                    />
-                    <div className="flex justify-between text-xs text-muted">
-                      <span>Preciso (0)</span>
-                      <span className="font-mono text-accent font-medium">{settings.temperature.toFixed(2)}</span>
-                      <span>Creativo (1)</span>
-                    </div>
+                  <input
+                    type="range" min={0} max={1} step={0.05}
+                    value={settings.temperature}
+                    onChange={e => setSettings(s => ({ ...s, temperature: parseFloat(e.target.value) }))}
+                    className="w-full accent-accent"
+                  />
+                  <div className="flex justify-between text-xs text-muted mt-1">
+                    <span>Preciso (0)</span>
+                    <span className="font-mono text-accent font-medium">{settings.temperature.toFixed(2)}</span>
+                    <span>Creativo (1)</span>
                   </div>
                 </SettingsSection>
 
@@ -486,30 +623,20 @@ export default function App() {
                   <textarea
                     value={settings.systemPrompt}
                     onChange={e => setSettings(s => ({ ...s, systemPrompt: e.target.value }))}
-                    rows={6}
+                    rows={5}
                     className="w-full bg-elevated border border-border rounded-xl px-3 py-2.5 text-xs text-secondary focus:text-primary focus:border-accent/50 focus:outline-none resize-none leading-relaxed transition-colors"
-                    placeholder="Descrivi il comportamento del modello…"
                   />
                 </SettingsSection>
 
-                {/* Theme note */}
-                <SettingsSection icon={<Moon className="w-4 h-4" />} title="Aspetto">
-                  <div className="flex items-center justify-between px-3 py-2.5 rounded-xl border border-border">
-                    <span className="text-sm text-secondary">Tema scuro</span>
-                    <span className="text-xs text-muted">Attivo</span>
-                  </div>
-                </SettingsSection>
-
-                {/* About */}
+                {/* Info */}
                 <SettingsSection icon={<Info className="w-4 h-4" />} title="Informazioni">
                   <div className="space-y-2 text-xs text-secondary">
                     <InfoRow label="Versione" value="1.0.0" />
-                    <InfoRow label="Modello attivo" value={MODELS.find(m => m.id === settings.model)?.label ?? '—'} />
-                    <InfoRow label="SDK" value="@google/genai 1.29" />
+                    <InfoRow label="Cloud API" value="Nessuna" />
+                    <InfoRow label="Dati inviati" value="Solo locale" />
                   </div>
                 </SettingsSection>
 
-                {/* Reset */}
                 <button
                   onClick={() => setSettings(DEFAULT_SETTINGS)}
                   className="w-full px-3 py-2.5 rounded-xl border border-border text-sm text-secondary hover:bg-elevated hover:text-primary transition-colors"
@@ -536,18 +663,15 @@ function WelcomeScreen({ onSuggestion }: { onSuggestion: (s: string) => void }) 
         transition={{ duration: 0.4 }}
         className="flex flex-col items-center text-center max-w-xl"
       >
-        <div className="mb-6">
-          <GemcodeLogo size={48} />
-        </div>
+        <div className="mb-6"><GemcodeLogo size={48} /></div>
         <h1 className="text-3xl font-bold text-primary mb-2 tracking-tight">
           Ciao, come posso aiutarti?
         </h1>
         <p className="text-secondary text-base mb-10">
-          Powered by Gemini · GemCode AI Assistant
+          AI locale · Nessun dato inviato al cloud
         </p>
-
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full max-w-lg">
-          {SUGGESTION_CHIPS.map((chip) => (
+          {SUGGESTION_CHIPS.map(chip => (
             <button
               key={chip}
               onClick={() => onSuggestion(chip)}
@@ -568,7 +692,7 @@ function MessageBubble({ message }: { message: Message }) {
   const [copied, setCopied] = useState(false);
   const isUser = message.role === 'user';
 
-  const copyText = () => {
+  const copy = () => {
     navigator.clipboard.writeText(message.text).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
@@ -582,15 +706,12 @@ function MessageBubble({ message }: { message: Message }) {
       transition={{ duration: 0.2 }}
       className={`flex gap-3 ${isUser ? 'flex-row-reverse' : 'flex-row'}`}
     >
-      {/* Avatar */}
       {!isUser && (
         <div className="shrink-0 mt-1 w-7 h-7 rounded-full bg-accent/15 border border-accent/20 flex items-center justify-center">
           <Sparkles className="w-3.5 h-3.5 text-accent" />
         </div>
       )}
-
-      {/* Bubble */}
-      <div className={`group relative max-w-[80%] ${isUser ? 'items-end' : 'items-start'} flex flex-col gap-1`}>
+      <div className={`group relative max-w-[80%] flex flex-col gap-1 ${isUser ? 'items-end' : 'items-start'}`}>
         <div
           className={`px-4 py-3 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap break-words ${
             isUser
@@ -603,11 +724,9 @@ function MessageBubble({ message }: { message: Message }) {
             <span className="inline-block w-2 h-4 ml-0.5 bg-accent/70 rounded-sm animate-pulse align-middle" />
           )}
         </div>
-
-        {/* Copy button */}
         {!message.isStreaming && message.text && (
           <button
-            onClick={copyText}
+            onClick={copy}
             className="opacity-0 group-hover:opacity-100 self-end flex items-center gap-1.5 text-xs text-muted hover:text-secondary transition-all px-1.5 py-0.5 rounded-md"
           >
             {copied ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
@@ -619,17 +738,88 @@ function MessageBubble({ message }: { message: Message }) {
   );
 }
 
-// ─── Settings Helpers ─────────────────────────────────────────────────────────
+// ─── Error Banner ─────────────────────────────────────────────────────────────
 
-function SettingsSection({
-  icon,
-  title,
-  children,
+function ErrorBanner({ message }: { message: string }) {
+  return (
+    <div className="flex items-start gap-3 text-sm text-red-400 bg-red-400/10 border border-red-400/20 rounded-2xl px-4 py-3">
+      <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+      <span className="whitespace-pre-wrap">{message}</span>
+    </div>
+  );
+}
+
+// ─── Backend Status ───────────────────────────────────────────────────────────
+
+function BackendStatusDot({
+  backend, ollamaStatus, windowAiStatus,
 }: {
+  backend: InferenceBackend;
+  ollamaStatus: 'online' | 'offline' | 'checking';
+  windowAiStatus: 'available' | 'unavailable' | 'checking';
+}) {
+  const isOk =
+    (backend === 'ollama' && ollamaStatus === 'online') ||
+    (backend === 'window-ai' && windowAiStatus === 'available');
+  const isChecking =
+    (backend === 'ollama' && ollamaStatus === 'checking') ||
+    (backend === 'window-ai' && windowAiStatus === 'checking');
+
+  return (
+    <span
+      className={`w-2 h-2 rounded-full shrink-0 ${
+        isChecking ? 'bg-yellow-400/60 animate-pulse' :
+        isOk ? 'bg-green-400' : 'bg-red-400'
+      }`}
+    />
+  );
+}
+
+function BackendCard({
+  active, onClick, icon, title, description, status, statusLabel,
+}: {
+  active: boolean;
+  onClick: () => void;
   icon: React.ReactNode;
   title: string;
-  children: React.ReactNode;
+  description: string;
+  status: 'ok' | 'error' | 'checking';
+  statusLabel: string;
 }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`w-full text-left px-3 py-3 rounded-xl border transition-colors ${
+        active
+          ? 'border-accent/60 bg-accent/10'
+          : 'border-border hover:border-accent/30 hover:bg-elevated/50'
+      }`}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-center gap-2.5">
+          <span className={active ? 'text-accent' : 'text-secondary'}>{icon}</span>
+          <div>
+            <p className={`text-sm font-medium ${active ? 'text-primary' : 'text-secondary'}`}>{title}</p>
+            <p className="text-xs text-muted">{description}</p>
+          </div>
+        </div>
+        <span
+          className={`text-xs px-1.5 py-0.5 rounded-full font-medium shrink-0 mt-0.5 ${
+            status === 'ok' ? 'bg-green-500/15 text-green-400' :
+            status === 'error' ? 'bg-red-500/15 text-red-400' :
+            'bg-yellow-500/15 text-yellow-400'
+          }`}
+        >
+          {statusLabel}
+        </span>
+      </div>
+    </button>
+  );
+}
+
+// ─── Settings Helpers ─────────────────────────────────────────────────────────
+
+function SettingsSection({ icon, title, children }: { icon: React.ReactNode; title: string; children: React.ReactNode }) {
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2 text-muted">
