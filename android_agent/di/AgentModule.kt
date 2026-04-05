@@ -106,18 +106,20 @@ object AgentModule {
      * mmap safety: `MediaPipeLlmInference` usa `setModelPath()` → mmap nativo.
      * Non caricare mai i pesi come ByteArray.
      */
-    @Provides
-    @Singleton
-    fun provideLlmInferenceWrapper(): LlmInferenceWrapper = MutableLlmInferenceWrapper()
-
     /**
-     * Espone anche la classe concreta [MutableLlmInferenceWrapper] per i clienti
-     * che devono chiamare `initialize()` (es. [AgentOrchestrator]).
-     * Questa istanza È la stessa fornita come [LlmInferenceWrapper] — il cast è safe.
+     * Single source of truth for the LLM engine.
+     * [AgentOrchestrator] calls `initialize()` to swap the engine at runtime;
+     * [AgentLoop] receives it as [LlmInferenceWrapper] and always sees the current engine.
+     * Both bindings MUST share the same instance — hence this two-step approach.
      */
     @Provides
     @Singleton
     fun provideMutableLlmWrapper(): MutableLlmInferenceWrapper = MutableLlmInferenceWrapper()
+
+    @Provides
+    @Singleton
+    fun provideLlmInferenceWrapper(mutableWrapper: MutableLlmInferenceWrapper): LlmInferenceWrapper =
+        mutableWrapper
 
     // ── ContextPruningManager ─────────────────────────────────────────────────
 

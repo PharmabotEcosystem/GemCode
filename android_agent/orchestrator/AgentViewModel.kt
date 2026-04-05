@@ -76,11 +76,7 @@ class AgentViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             orchestrator.responses.collect { response ->
-                val lastUserEntry = _conversationHistory.value
-                    .lastOrNull { it.role == ChatRole.User }
-                val prompt = lastUserEntry?.content ?: ""
                 appendMessage(ChatRole.Agent, response)
-                _ = prompt // suppress unused warning — used for context
             }
         }
     }
@@ -151,5 +147,3 @@ data class ChatEntry(
     val timestamp: Long = System.currentTimeMillis()
 )
 
-// Workaround per suppress "unused" warning sul val ignorato nell'init block
-private var _ : Any? = null

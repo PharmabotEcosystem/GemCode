@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import dagger.hilt.android.AndroidEntryPoint
 import com.example.agent.core.AgentLoop
 import com.example.agent.core.LlmInferenceWrapper
 import com.example.agent.memory.LocalMemoryManager
@@ -74,6 +75,7 @@ sealed class AgentServiceState {
  *   when [AgentLoop]'s [LlmInferenceWrapper] is closed by MainActivity.
  * - We never hold a ByteArray reference to model weights here.
  */
+@AndroidEntryPoint
 class AgentForegroundService : Service() {
 
     companion object {

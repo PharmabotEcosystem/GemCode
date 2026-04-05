@@ -61,11 +61,11 @@ import com.example.agent.service.InferenceHttpServer
 import com.example.agent.tools.*
 import com.example.agent.ui.ShizukuState
 import com.example.agent.ui.checkShizukuState
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import dagger.hilt.android.AndroidEntryPoint
 import rikka.shizuku.Shizuku
 import java.io.File
 import java.net.NetworkInterface
@@ -103,6 +103,7 @@ val AVAILABLE_MODELS = listOf(
 
 // ─── MainActivity ─────────────────────────────────────────────────────────────
 
+@AndroidEntryPoint
 class MainActivity : ComponentActivity(), Shizuku.OnRequestPermissionResultListener {
 
     // ── Core deps ─────────────────────────────────────────────────────────────
@@ -228,7 +229,7 @@ class MainActivity : ComponentActivity(), Shizuku.OnRequestPermissionResultListe
         if (isRunning) return
         isRunning = true
         messages = messages + ChatEntry("User", prompt)
-        CoroutineScope(Dispatchers.IO).launch {
+        lifecycleScope.launch(Dispatchers.IO) {
             agentLoop.run(prompt)
             val updated = parseHistory(memoryManager.getConversationState() ?: "")
             withContext(Dispatchers.Main) {
