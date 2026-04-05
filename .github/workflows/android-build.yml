@@ -52,6 +52,11 @@ jobs:
       - name: Grant Gradle wrapper execute permission
         run: chmod +x gradlew
 
+      - name: Install Android SDK 35 and create local.properties
+        run: |
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+
       - name: Run Android Lint
         run: ./gradlew :android_agent:lintDebug --no-daemon
 
@@ -90,6 +95,11 @@ jobs:
 
       - name: Grant Gradle wrapper execute permission
         run: chmod +x gradlew
+
+      - name: Install Android SDK 35 and create local.properties
+        run: |
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
 
       - name: Run unit tests
         run: ./gradlew :android_agent:testDebugUnitTest --no-daemon --stacktrace
@@ -136,6 +146,11 @@ jobs:
 
       - name: Grant Gradle wrapper execute permission
         run: chmod +x gradlew
+
+      - name: Install Android SDK 35 and create local.properties
+        run: |
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
 
       - name: Build debug APK
         run: ./gradlew :android_agent:assembleDebug --no-daemon --stacktrace

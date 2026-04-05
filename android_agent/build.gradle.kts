@@ -80,6 +80,16 @@ android {
         }
     }
 
+    lint {
+        // Fail only on actual errors; warnings do not block CI
+        abortOnError = true
+        // Downgrade deprecation warnings to informational — recycle() is
+        // deprecated on API 33+ but still needed for minSdk 29
+        disable += "Deprecation"
+        // Ignore missing translation warnings in a prototype with no l10n
+        disable += "MissingTranslation"
+    }
+
     // Source sets: include sibling "flat" directories inside android_agent/.
     // Paths are relative to this module's directory (android_agent/).
     sourceSets {
