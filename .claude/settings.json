@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /home/user/GemCode/.claude/hooks/session-start.sh",
+            "timeout": 10,
+            "statusMessage": "Loading GemCode repo context..."
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "if": "Bash(git commit*)",
+            "command": "CMD=$(jq -r '.tool_input.command // \"\"'); echo \"$CMD\" | grep -qE '^git commit' && { cd /home/user/GemCode && STAGED=$(git diff --cached --stat 2>/dev/null || echo \"(nothing staged)\") && STATUS=$(git status --short 2>/dev/null) && jq -n --arg msg \"Pre-commit — staged files:\\n$STAGED\\n\\nStatus:\\n${STATUS:-(clean)}\" '{systemMessage:$msg}'; } || true",
+            "timeout": 10,
+            "statusMessage": "Checking staged files..."
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "if": "Bash(git push*)",
+            "command": "CMD=$(jq -r '.tool_input.command // \"\"'); echo \"$CMD\" | grep -qE 'git push' && { cd /home/user/GemCode && BRANCH=$(git branch --show-current) && AHEAD=$(git rev-list origin/$BRANCH..HEAD 2>/dev/null | wc -l | tr -d ' ') && jq -n --arg msg \"Push complete — branch: $BRANCH | local commits ahead of remote: $AHEAD\" '{systemMessage:$msg}'; } || true",
+            "timeout": 10,
+            "statusMessage": "Checking push result..."
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /home/user/GemCode/.claude/hooks/android-file-check.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
