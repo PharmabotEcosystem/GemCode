@@ -72,6 +72,14 @@ android {
         }
     }
 
+    testOptions {
+        unitTests {
+            // Stub android.util.Log and other Android stubs in JVM unit tests
+            // instead of throwing UnsatisfiedLinkError
+            isReturnDefaultValues = true
+        }
+    }
+
     // Source sets: include sibling "flat" directories inside android_agent/.
     // Paths are relative to this module's directory (android_agent/).
     sourceSets {
@@ -169,4 +177,9 @@ dependencies {
     // ── Debug tools ──────────────────────────────────────────────────────────
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
+
+    // ── Unit tests (JVM — no emulator required) ───────────────────────────────
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("io.mockk:mockk:1.13.13")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:$coroutinesVersion")
 }
