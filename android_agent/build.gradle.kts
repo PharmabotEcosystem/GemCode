@@ -80,6 +80,16 @@ android {
         }
     }
 
+    lint {
+        // Fail only on actual errors; warnings do not block CI
+        abortOnError = true
+        // Downgrade deprecation warnings to informational — recycle() is
+        // deprecated on API 33+ but still needed for minSdk 29
+        disable += "Deprecation"
+        // Ignore missing translation warnings in a prototype with no l10n
+        disable += "MissingTranslation"
+    }
+
     // Source sets: include sibling "flat" directories inside android_agent/.
     // Paths are relative to this module's directory (android_agent/).
     sourceSets {
@@ -120,6 +130,11 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.activity:activity-compose:1.9.2")
+
+    // ── Material Components — provides Theme.Material3.DayNight.NoActionBar ──
+    // Required for XML themes in res/values/themes.xml even in Compose-only apps.
+    // The Compose material3 library does not ship XML theme resources.
+    implementation("com.google.android.material:material:1.12.0")
 
     // ── Core Android ─────────────────────────────────────────────────────────
     implementation("androidx.core:core-ktx:1.13.1")

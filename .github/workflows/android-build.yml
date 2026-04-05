@@ -19,6 +19,14 @@ on:
       - '.github/workflows/android-build.yml'
   workflow_dispatch:
 
+# Grant the minimum permissions needed by every job.
+# pull-requests: read is required so actions/checkout can fetch the
+# GitHub-generated merge commit ref (refs/pull/N/merge) on PR runs.
+# Without it the runner gets "Repository not found" when fetching that ref.
+permissions:
+  contents: read
+  pull-requests: read
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared setup action (avoids repeating JDK + cache steps in every job)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -38,6 +46,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -51,6 +61,11 @@ jobs:
 
       - name: Grant Gradle wrapper execute permission
         run: chmod +x gradlew
+
+      - name: Install Android SDK 35 and create local.properties
+        run: |
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
 
       - name: Run Android Lint
         run: ./gradlew :android_agent:lintDebug --no-daemon
@@ -77,6 +92,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -90,6 +107,11 @@ jobs:
 
       - name: Grant Gradle wrapper execute permission
         run: chmod +x gradlew
+
+      - name: Install Android SDK 35 and create local.properties
+        run: |
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
 
       - name: Run unit tests
         run: ./gradlew :android_agent:testDebugUnitTest --no-daemon --stacktrace
@@ -123,6 +145,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -136,6 +160,11 @@ jobs:
 
       - name: Grant Gradle wrapper execute permission
         run: chmod +x gradlew
+
+      - name: Install Android SDK 35 and create local.properties
+        run: |
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
 
       - name: Build debug APK
         run: ./gradlew :android_agent:assembleDebug --no-daemon --stacktrace
