@@ -7,6 +7,8 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    // Kotlin 2.0+: compose compiler is a separate plugin — replaces kotlinCompilerExtensionVersion
+    id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.kotlin.plugin.serialization")
     // KSP: annotation processor per Hilt, Room e Serialization
     // Sostituisce kapt (più veloce, supporta Kotlin incremental compilation)
@@ -59,10 +61,8 @@ android {
         buildConfig = true
     }
 
-    composeOptions {
-        // Versione del Compose compiler allineata a Kotlin 2.0.x
-        kotlinCompilerExtensionVersion = "1.5.14"
-    }
+    // composeOptions.kotlinCompilerExtensionVersion is NOT needed with Kotlin 2.0+:
+    // the org.jetbrains.kotlin.plugin.compose plugin handles the compiler automatically.
 
     packaging {
         resources {
@@ -72,22 +72,21 @@ android {
         }
     }
 
-    // Source sets: include le directory "flat" usate per i moduli core e tools
-    // (es. android_agent/core/, android_agent/tools/, ecc.)
+    // Source sets: include sibling "flat" directories inside android_agent/.
+    // Paths are relative to this module's directory (android_agent/).
     sourceSets {
         getByName("main") {
             java.srcDirs(
                 "src/main/java",
-                // Directory "flat" del progetto — stessa convenzione usata nei moduli esistenti
-                "../../android_agent/core",
-                "../../android_agent/memory",
-                "../../android_agent/tools",
-                "../../android_agent/ui",
-                "../../android_agent/service",
-                "../../android_agent/di",
-                "../../android_agent/mvi",
-                "../../android_agent/orchestrator",
-                "../../android_agent/shizuku"
+                "core",
+                "memory",
+                "tools",
+                "ui",
+                "service",
+                "di",
+                "mvi",
+                "orchestrator",
+                "shizuku"
             )
         }
     }
