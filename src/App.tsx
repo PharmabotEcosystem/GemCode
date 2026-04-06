@@ -697,7 +697,8 @@ function WelcomeScreen({ onSuggestion }: { onSuggestion: (s: string) => void }) 
 
 // ─── Message Bubble ───────────────────────────────────────────────────────────
 
-function MessageBubble({ message }: { message: Message }) {
+// React 19: key is now a regular prop — must be declared in the component's prop type
+function MessageBubble({ message }: { message: Message; key?: string }) {
   const [copied, setCopied] = useState(false);
   const isUser = message.role === 'user';
 

@@ -38,7 +38,7 @@ interface MemoryDao {
 }
 
 // 3. Database Room
-@Database(entities = [MemoryEntity::class, ConversationStateEntity::class], version = 2)
+@Database(entities = [MemoryEntity::class, ConversationStateEntity::class], version = 2, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun memoryDao(): MemoryDao
 }
