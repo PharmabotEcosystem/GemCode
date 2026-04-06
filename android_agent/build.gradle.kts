@@ -50,13 +50,6 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    // kotlinOptions {} was removed in Kotlin 2.3.0 — use compilerOptions DSL instead
-    compilerOptions {
-        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
-        // Abilita strict API per evitare tipi inferiti non intenzionali nelle interfacce pubbliche
-        freeCompilerArgs.addAll("-Xexplicit-api=warning")
-    }
-
     buildFeatures {
         compose = true
         buildConfig = true
@@ -108,6 +101,16 @@ android {
                 "shizuku"
             )
         }
+    }
+}
+
+// kotlinOptions {} was removed in Kotlin 2.3.0 — compilerOptions must be a top-level
+// kotlin {} block, not inside android {}
+kotlin {
+    compilerOptions {
+        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
+        // Abilita strict API per evitare tipi inferiti non intenzionali nelle interfacce pubbliche
+        freeCompilerArgs.addAll("-Xexplicit-api=warning")
     }
 }
 
