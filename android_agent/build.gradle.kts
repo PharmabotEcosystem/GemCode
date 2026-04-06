@@ -121,7 +121,7 @@ kotlin {
 // ============================================================================
 
 val hiltVersion = "2.57.2"
-val roomVersion = "2.6.1"
+val roomVersion = "2.7.0"          // 2.7.0 = first stable with native KSP2 support (Kotlin 2.0+)
 val coroutinesVersion = "1.8.1"
 val shizukuVersion = "13.1.0"
 val composeVersion = "2024.09.00"  // BOM Compose
@@ -154,7 +154,8 @@ dependencies {
     ksp("com.google.dagger:hilt-compiler:$hiltVersion")
 
     // Hilt ViewModel integration — abilita @HiltViewModel e hiltViewModel() in Compose
-    implementation("androidx.hilt:hilt-navigation-compose:1.2.0")
+    // 1.3.0: allinea hilt-android transitive dep a 2.51+ (vs 2.49 di 1.2.0)
+    implementation("androidx.hilt:hilt-navigation-compose:1.3.0")
 
     // ── Coroutines ───────────────────────────────────────────────────────────
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:$coroutinesVersion")
@@ -179,7 +180,8 @@ dependencies {
     ksp("androidx.room:room-compiler:$roomVersion")
 
     // ── Kotlinx Serialization ────────────────────────────────────────────────
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
+    // 1.7.3: recommended for Kotlin 2.x (1.6.3 was released alongside Kotlin 1.9.x)
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
 
     // ── Shizuku ──────────────────────────────────────────────────────────────
     // api: interfaccia Shizuku (binder IPC, Shizuku.newProcess(), ecc.)
@@ -201,6 +203,7 @@ dependencies {
 
     // ── Unit tests (JVM — no emulator required) ───────────────────────────────
     testImplementation("junit:junit:4.13.2")
-    testImplementation("io.mockk:mockk:1.13.13")
+    // 1.14.9: first series with Kotlin 2.1+/2.2+ support (1.13.13 was Kotlin 2.0.0 only)
+    testImplementation("io.mockk:mockk:1.14.9")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:$coroutinesVersion")
 }
