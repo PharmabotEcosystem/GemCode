@@ -104,13 +104,15 @@ android {
     }
 }
 
-// kotlinOptions {} was removed in Kotlin 2.3.0 — compilerOptions must be a top-level
-// kotlin {} block, not inside android {}
 kotlin {
     compilerOptions {
         jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
         // Abilita strict API per evitare tipi inferiti non intenzionali nelle interfacce pubbliche
         freeCompilerArgs.addAll("-Xexplicit-api=warning")
+        // litertlm-android:0.10.0 was compiled with Kotlin 2.3.0 metadata. Kotlin 2.2.21
+        // cannot read 2.3.0 ABI natively; this flag suppresses the version check.
+        // Remove once Hilt supports KSP 2.3.x and we can upgrade to Kotlin 2.3.0+.
+        freeCompilerArgs.addAll("-Xskip-metadata-version-check")
     }
 }
 
@@ -118,7 +120,7 @@ kotlin {
 // Versioni dipendenze
 // ============================================================================
 
-val hiltVersion = "2.51.1"
+val hiltVersion = "2.59.2"
 val roomVersion = "2.6.1"
 val coroutinesVersion = "1.8.1"
 val shizukuVersion = "13.1.0"
