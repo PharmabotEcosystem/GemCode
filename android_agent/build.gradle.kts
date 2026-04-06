@@ -54,6 +54,10 @@ android {
         jvmTarget = "17"
         // Abilita strict API per evitare tipi inferiti non intenzionali nelle interfacce pubbliche
         freeCompilerArgs += listOf("-Xexplicit-api=warning")
+        // litertlm-android:0.10.0 and transitive kotlin-reflect/stdlib were compiled with
+        // Kotlin 2.3.0/2.2.x ABI. KSP does not yet publish artifacts for those Kotlin versions,
+        // so we stay on Kotlin 2.1.20 and suppress the metadata version check instead.
+        freeCompilerArgs += listOf("-Xskip-metadata-version-check")
     }
 
     buildFeatures {
