@@ -120,7 +120,7 @@ kotlin {
 // Versioni dipendenze
 // ============================================================================
 
-val hiltVersion = "2.59.2"
+val hiltVersion = "2.57.2"
 val roomVersion = "2.6.1"
 val coroutinesVersion = "1.8.1"
 val shizukuVersion = "13.1.0"
