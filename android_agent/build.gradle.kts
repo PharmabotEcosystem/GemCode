@@ -50,10 +50,11 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
+    // kotlinOptions {} was removed in Kotlin 2.3.0 — use compilerOptions DSL instead
+    compilerOptions {
+        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
         // Abilita strict API per evitare tipi inferiti non intenzionali nelle interfacce pubbliche
-        freeCompilerArgs += listOf("-Xexplicit-api=warning")
+        freeCompilerArgs.addAll("-Xexplicit-api=warning")
     }
 
     buildFeatures {
