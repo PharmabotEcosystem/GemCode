@@ -593,7 +593,7 @@ fun ModelsScreen(modelIndex: Int, onSelectModel: (Int) -> Unit) {
             AVAILABLE_MODELS.forEachIndexed { idx, model ->
                 item(key = idx) {
                     val file     = File(context.filesDir, model.filename)
-                    val isLocal  by produceState(file.exists(), idx) { value = file.exists() }
+                    val isLocal  = remember(downloadStates[idx]) { file.exists() }
                     val isActive = idx == modelIndex
                     val state    = downloadStates[idx]
 
