@@ -208,7 +208,7 @@ class MainActivity : ComponentActivity(), Shizuku.OnRequestPermissionResultListe
     }
 
     private fun buildLoop(engine: LlmInferenceWrapper, tools: List<Tool>) =
-        AgentLoop(llmInference = engine, tools = tools, memoryManager = memoryManager)
+        AgentLoop(llmInference = engine, toolRegistry = DefaultToolRegistry(tools.toSet()), memoryManager = memoryManager)
 
     private fun selectModel(idx: Int, tools: List<Tool>) {
         modelIndex = idx
