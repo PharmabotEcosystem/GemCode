@@ -124,7 +124,7 @@ class AgentLoopTest {
         coEvery { llmInference.generateResponse(any()) } returns "Answer."
 
         val phases = mutableListOf<LoopPhase>()
-        agentLoop.run("Test") { phase -> phases.add(phase) }
+        agentLoop.run("Test", onPhaseChange = { phase -> phases.add(phase) })
 
         assertTrue("Expected at least one Thinking phase", phases.any { it is LoopPhase.Thinking })
     }
@@ -142,7 +142,7 @@ class AgentLoopTest {
         )
 
         val phases = mutableListOf<LoopPhase>()
-        agentLoop.run("Write file") { phase -> phases.add(phase) }
+        agentLoop.run("Write file", onPhaseChange = { phase -> phases.add(phase) })
 
         val invocations = phases.filterIsInstance<LoopPhase.InvokingTool>()
         assertTrue("Expected InvokingTool phase", invocations.isNotEmpty())

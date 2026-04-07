@@ -82,6 +82,11 @@ android {
         disable += "Deprecation"
         // Ignore missing translation warnings in a prototype with no l10n
         disable += "MissingTranslation"
+        // androidx.lifecycle.lint.NonNullableMutableLiveDataDetector crashes with an
+        // IncompatibleClassChangeError on Kotlin 2.2.x because the Analysis API changed
+        // KaCallableMemberCall from class to interface (KT-73255 / AGP 8.x + lifecycle-lint).
+        // Disable the check until lifecycle-lint ships a version compatible with Kotlin 2.2+.
+        disable += "NullSafeMutableLiveData"
     }
 
     // Source sets: include sibling "flat" directories inside android_agent/.

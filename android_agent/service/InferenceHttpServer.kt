@@ -62,33 +62,34 @@ class InferenceHttpServer(
         Log.i(TAG, "Inference HTTP server stopped")
     }
 
-    override fun serve(session: IHTTPSession): Response = try {
+    override fun serve(session: IHTTPSession): Response {
         // CORS preflight
         if (session.method == Method.OPTIONS) {
             return corsResponse(Response.Status.OK, MIME_JSON, "{}")
         }
+        return try {
+            when {
+                session.uri == "/api/tags" && session.method == Method.GET ->
+                    handleTags()
 
-        when {
-            session.uri == "/api/tags" && session.method == Method.GET ->
-                handleTags()
+                session.uri == "/api/chat" && session.method == Method.POST ->
+                    handleChat(session)
 
-            session.uri == "/api/chat" && session.method == Method.POST ->
-                handleChat(session)
-
-            else ->
-                corsResponse(
-                    Response.Status.NOT_FOUND,
-                    MIME_JSON,
-                    """{"error":"endpoint not found: ${session.method} ${session.uri}"}"""
-                )
+                else ->
+                    corsResponse(
+                        Response.Status.NOT_FOUND,
+                        MIME_JSON,
+                        """{"error":"endpoint not found: ${session.method} ${session.uri}"}"""
+                    )
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Request error: ${e.message}", e)
+            corsResponse(
+                Response.Status.INTERNAL_ERROR,
+                MIME_JSON,
+                """{"error":${JSONObject.quote(e.message ?: "internal error")}}"""
+            )
         }
-    } catch (e: Exception) {
-        Log.e(TAG, "Request error: ${e.message}", e)
-        corsResponse(
-            Response.Status.INTERNAL_ERROR,
-            MIME_JSON,
-            """{"error":${JSONObject.quote(e.message ?: "internal error")}}"""
-        )
     }
 
     // ── /api/tags — restituisce i modelli disponibili ─────────────────────────

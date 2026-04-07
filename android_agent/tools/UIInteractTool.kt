@@ -93,8 +93,8 @@ class UIInteractTool : Tool {
                     }
                 }
                 "click_coordinates" -> {
-                    val x = params.jsonObject["x"]?.jsonPrimitive?.float ?: return@withContext "Error: x required."
-                    val y = params.jsonObject["y"]?.jsonPrimitive?.float ?: return@withContext "Error: y required."
+                    val x = params.jsonObject["x"]?.jsonPrimitive?.content?.toFloat() ?: return@withContext "Error: x required."
+                    val y = params.jsonObject["y"]?.jsonPrimitive?.content?.toFloat() ?: return@withContext "Error: y required."
                     performClickAt(service, x, y)
                     "Success: Clicked at ($x, $y)"
                 }
