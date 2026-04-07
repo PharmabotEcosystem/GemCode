@@ -61,6 +61,7 @@ import com.example.agent.service.InferenceHttpServer
 import com.example.agent.tools.*
 import com.example.agent.ui.ShizukuState
 import com.example.agent.ui.checkShizukuState
+import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch

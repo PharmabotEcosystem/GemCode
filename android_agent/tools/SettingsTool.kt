@@ -33,7 +33,7 @@ class SettingsTool : Tool {
         val key = params.jsonObject["key"]?.jsonPrimitive?.content ?: return@withContext "Error: key required."
         val value = params.jsonObject["value"]?.jsonPrimitive?.content ?: return@withContext "Error: value required."
 
-        if (!Shizuku.pingBider()) {
+        if (!Shizuku.pingBinder()) {
             return@withContext "Error: Shizuku is not running or not accessible."
         }
 

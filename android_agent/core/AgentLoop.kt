@@ -1,6 +1,7 @@
 package com.example.agent.core
 
 import android.util.Log
+import com.example.agent.memory.LocalMemoryManager
 import com.example.agent.tools.ToolRegistry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext

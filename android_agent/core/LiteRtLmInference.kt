@@ -116,7 +116,11 @@ class LiteRtLmInference(
                     "Model not found or failed to load: $modelPath"
         try {
             val convConfig = ConversationConfig(
-                samplerConfig = SamplerConfig(temperature = temperature)
+                samplerConfig = SamplerConfig(
+                    temperature = temperature.toDouble(),
+                    topK = 40,
+                    topP = 0.95
+                )
             )
             e.createConversation(convConfig).use { conversation ->
                 val response = conversation.sendMessage(prompt)
