@@ -100,8 +100,8 @@ class AgentViewModel @Inject constructor(
      * Richiede il caricamento del modello dal percorso specificato.
      * Trigger dalla [ModelSelectionCard] dopo il download.
      */
-    fun initializeModel(modelPath: String) {
-        orchestrator.dispatch(AgentIntent.InitializeModel(modelPath))
+    fun initializeModel(modelPath: String, useGpu: Boolean = false) {
+        orchestrator.dispatch(AgentIntent.InitializeModel(modelPath, useGpu))
     }
 
     /**

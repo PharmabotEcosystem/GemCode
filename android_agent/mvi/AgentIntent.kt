@@ -46,7 +46,7 @@ sealed interface AgentIntent {
      * @param modelPath  Percorso assoluto del file `.bin` del modello su disco.
      *                   Deve puntare a un file mmap-able in `Context.filesDir`.
      */
-    data class InitializeModel(val modelPath: String) : AgentIntent
+    data class InitializeModel(val modelPath: String, val useGpu: Boolean = false) : AgentIntent
 
     /**
      * Risultato dell'esecuzione di un tool, prodotto internamente dall'AgentLoop.

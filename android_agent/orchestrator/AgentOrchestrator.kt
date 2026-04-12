@@ -9,6 +9,7 @@ import com.example.agent.core.MediaPipeLlmInference
 import com.example.agent.di.MutableLlmInferenceWrapper
 import com.example.agent.mvi.AgentIntent
 import com.example.agent.mvi.AgentState
+import com.example.agent.mvi.isBusy
 import com.example.agent.service.ResourceManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
@@ -149,7 +150,7 @@ class AgentOrchestrator @Inject constructor(
             // ── InitializeModel ──────────────────────────────────────────────
             is AgentIntent.InitializeModel -> {
                 transition(AgentState.LoadingWeights(intent.modelPath))
-                loadModel(intent.modelPath)
+                loadModel(intent.modelPath, intent.useGpu)
             }
 
             // ── UserPrompt ───────────────────────────────────────────────────
@@ -271,7 +272,7 @@ class AgentOrchestrator @Inject constructor(
     // Model loading
     // ─────────────────────────────────────────────────────────────────────────
 
-    private suspend fun loadModel(modelPath: String) = withContext(Dispatchers.IO) {
+    private suspend fun loadModel(modelPath: String, useGpu: Boolean) = withContext(Dispatchers.IO) {
         try {
             val memCheck = resourceManager.canLoadModel(context, modelPath)
             if (!memCheck.isAvailable) {
@@ -281,9 +282,20 @@ class AgentOrchestrator @Inject constructor(
                 ))
                 return@withContext
             }
-            val newEngine = MediaPipeLlmInference(context, modelPath)
+
+            val newEngine = when {
+                modelPath.endsWith(".litertlm", ignoreCase = true) -> {
+                    // Gemma 4 — LiteRT-LM
+                    com.example.agent.core.LiteRtLmInference(context, modelPath, useGpu = useGpu)
+                }
+                else -> {
+                    // Gemma 3/2B — MediaPipe Tasks
+                    MediaPipeLlmInference(context, modelPath, useGpu = useGpu)
+                }
+            }
+
             llmWrapper.initialize(newEngine)
-            Log.d(TAG, "Model loaded: $modelPath")
+            Log.d(TAG, "Model loaded (${if (useGpu) "GPU" else "CPU"}): $modelPath")
             transition(AgentState.Idle)
         } catch (e: Exception) {
             Log.e(TAG, "Model load failed: ${e.message}", e)
@@ -369,9 +381,6 @@ class AgentOrchestrator @Inject constructor(
         Log.d(TAG, "▶ ${old::class.simpleName} → ${newState::class.simpleName}")
     }
 
-    private val AgentState.isBusy: Boolean
-        get() = this is AgentState.Reasoning
-                || this is AgentState.ExecutingTool
-                || this is AgentState.LoadingWeights
-                || this is AgentState.AwaitingConfirmation
+    // NOTE: isBusy è definito come public extension in AgentState.kt (com.example.agent.mvi)
+    // e importato esplicitamente sopra — non ridefinire qui per evitare divergenze.
 }

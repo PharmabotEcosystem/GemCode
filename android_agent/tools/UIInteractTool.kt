@@ -1,51 +1,21 @@
 package com.example.agent.tools
 
-import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.graphics.Path
 import android.view.accessibility.AccessibilityNodeInfo
+import android.os.Bundle
+import android.util.Log
+import com.example.agent.service.AgentAccessibilityService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
-import android.view.accessibility.AccessibilityEvent
-import android.os.Bundle
-import android.graphics.PixelFormat
-import android.view.Gravity
-import android.view.WindowManager
-import android.view.View
-import android.view.ViewGroup
-import android.widget.FrameLayout
-import androidx.compose.ui.platform.ComposeView
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.Alignment
-import androidx.compose.foundation.background
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.ui.graphics.Color
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Android
-import androidx.compose.material.icons.filled.Close
-import androidx.lifecycle.setViewTreeLifecycleOwner
-import androidx.lifecycle.setViewTreeViewModelStoreOwner
-import androidx.savedstate.setViewTreeSavedStateRegistryOwner
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleRegistry
-import androidx.lifecycle.LifecycleOwner
-import androidx.lifecycle.ViewModelStore
-import androidx.lifecycle.ViewModelStoreOwner
-import androidx.savedstate.SavedStateRegistry
-import androidx.savedstate.SavedStateRegistryController
-import androidx.savedstate.SavedStateRegistryOwner
-
 /**
+ * # UIInteractTool
+ *
  * Tool per interagire con la UI di altre app.
- * Richiede che l'app sia abilitata come AccessibilityService nelle impostazioni.
+ * Richiede che [AgentAccessibilityService] sia abilitato nelle Impostazioni.
  */
 class UIInteractTool : Tool {
     override val name = "UIInteractTool"
@@ -54,7 +24,7 @@ class UIInteractTool : Tool {
         {
           "type": "object",
           "properties": {
-            "action": { "type": "string", "enum": ["click_node", "click_coordinates", "scroll_up", "scroll_down", "input_text", "check_state", "take_photo", "dump_ui"] },
+            "action": { "type": "string", "enum": ["click_node", "click_coordinates", "scroll_up", "scroll_down", "input_text", "check_state", "dump_ui"] },
             "nodeId": { "type": "string", "description": "View ID to interact with (for 'click_node', 'input_text', 'check_state')" },
             "x": { "type": "number", "description": "X coordinate (for 'click_coordinates')" },
             "y": { "type": "number", "description": "Y coordinate (for 'click_coordinates')" },
@@ -64,15 +34,15 @@ class UIInteractTool : Tool {
         }
     """.trimIndent()
 
-    override suspend fun execute(params: JsonElement): String = withContext(Dispatchers.Main) {
+    override suspend fun execute(params: JsonObject): String = withContext(Dispatchers.Main) {
         val service = AgentAccessibilityService.instance ?: return@withContext "Error: AccessibilityService is not connected. Please enable it in Settings."
         
-        val action = params.jsonObject["action"]?.jsonPrimitive?.content ?: return@withContext "Error: action required."
+        val action = params["action"]?.jsonPrimitive?.content ?: return@withContext "Error: action required."
 
         return@withContext try {
             when (action) {
                 "click_node" -> {
-                    val nodeId = params.jsonObject["nodeId"]?.jsonPrimitive?.content ?: return@withContext "Error: nodeId required."
+                    val nodeId = params["nodeId"]?.jsonPrimitive?.content ?: return@withContext "Error: nodeId required."
                     val rootNode = service.rootInActiveWindow
                     val nodes = rootNode?.findAccessibilityNodeInfosByViewId(nodeId)
                     
@@ -93,8 +63,8 @@ class UIInteractTool : Tool {
                     }
                 }
                 "click_coordinates" -> {
-                    val x = params.jsonObject["x"]?.jsonPrimitive?.content?.toFloat() ?: return@withContext "Error: x required."
-                    val y = params.jsonObject["y"]?.jsonPrimitive?.content?.toFloat() ?: return@withContext "Error: y required."
+                    val x = params["x"]?.jsonPrimitive?.content?.toFloat() ?: return@withContext "Error: x required."
+                    val y = params["y"]?.jsonPrimitive?.content?.toFloat() ?: return@withContext "Error: y required."
                     performClickAt(service, x, y)
                     "Success: Clicked at ($x, $y)"
                 }
@@ -113,8 +83,8 @@ class UIInteractTool : Tool {
                     "Success: Performed $action"
                 }
                 "input_text" -> {
-                    val nodeId = params.jsonObject["nodeId"]?.jsonPrimitive?.content ?: return@withContext "Error: nodeId required."
-                    val text = params.jsonObject["text"]?.jsonPrimitive?.content ?: return@withContext "Error: text required."
+                    val nodeId = params["nodeId"]?.jsonPrimitive?.content ?: return@withContext "Error: nodeId required."
+                    val text = params["text"]?.jsonPrimitive?.content ?: return@withContext "Error: text required."
                     val rootNode = service.rootInActiveWindow
                     val nodes = rootNode?.findAccessibilityNodeInfosByViewId(nodeId)
                     
@@ -130,7 +100,7 @@ class UIInteractTool : Tool {
                     }
                 }
                 "check_state" -> {
-                    val nodeId = params.jsonObject["nodeId"]?.jsonPrimitive?.content ?: return@withContext "Error: nodeId required."
+                    val nodeId = params["nodeId"]?.jsonPrimitive?.content ?: return@withContext "Error: nodeId required."
                     val rootNode = service.rootInActiveWindow
                     val nodes = rootNode?.findAccessibilityNodeInfosByViewId(nodeId)
                     
@@ -149,16 +119,6 @@ class UIInteractTool : Tool {
                         "Error: Node $nodeId not found."
                     }
                 }
-                "take_photo" -> {
-                    val deferred = kotlinx.coroutines.CompletableDeferred<String>()
-                    CameraCaptureActivity.photoResultDeferred = deferred
-                    
-                    val intent = android.content.Intent(service, CameraCaptureActivity::class.java)
-                    intent.flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK
-                    service.startActivity(intent)
-                    
-                    deferred.await()
-                }
                 "dump_ui" -> {
                     val rootNode = service.rootInActiveWindow
                     if (rootNode != null) {
@@ -172,6 +132,7 @@ class UIInteractTool : Tool {
                 else -> "Error: Unknown action $action"
             }
         } catch (e: Exception) {
+            Log.e("UIInteractTool", "Error during UI interaction", e)
             "Exception: ${e.message}"
         }
     }
@@ -205,13 +166,7 @@ class UIInteractTool : Tool {
         val id = node.viewIdResourceName ?: ""
         
         if (text.isNotBlank() || desc.isNotBlank() || id.isNotBlank() || node.isClickable) {
-            sb.append("$indent[${node.className}] ")
-            if (id.isNotBlank()) sb.append("id='$id' ")
-            if (text.isNotBlank()) sb.append("text='$text' ")
-            if (desc.isNotBlank()) sb.append("desc='$desc' ")
-            sb.append("bounds=[${rect.left},${rect.top}][${rect.right},${rect.bottom}] ")
-            if (node.isClickable) sb.append("clickable=true ")
-            sb.append("\n")
+            sb.appendLine("$indent[${node.className}] id='$id' text='$text' desc='$desc' bounds=[${rect.left},${rect.top}][${rect.right},${rect.bottom}] click=${node.isClickable}")
         }
         
         for (i in 0 until node.childCount) {
@@ -219,149 +174,6 @@ class UIInteractTool : Tool {
             if (child != null) {
                 dumpNode(child, depth + 1, sb)
                 child.recycle()
-            }
-        }
-    }
-}
-
-// Implementazione del servizio
-class AgentAccessibilityService : AccessibilityService(), LifecycleOwner, ViewModelStoreOwner, SavedStateRegistryOwner {
-    companion object {
-        var instance: AgentAccessibilityService? = null
-            private set
-    }
-
-    private lateinit var windowManager: WindowManager
-    private var overlayView: View? = null
-    
-    // Lifecycle components for Compose
-    private val lifecycleRegistry = LifecycleRegistry(this)
-    private val store = ViewModelStore()
-    private val savedStateRegistryController = SavedStateRegistryController.create(this)
-
-    override val lifecycle: Lifecycle get() = lifecycleRegistry
-    override val viewModelStore: ViewModelStore get() = store
-    override val savedStateRegistry: SavedStateRegistry get() = savedStateRegistryController.savedStateRegistry
-
-    override fun onCreate() {
-        super.onCreate()
-        savedStateRegistryController.performRestore(null)
-        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_CREATE)
-    }
-
-    override fun onServiceConnected() {
-        super.onServiceConnected()
-        instance = this
-        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_START)
-        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_RESUME)
-        showOverlay()
-    }
-
-    private fun showOverlay() {
-        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-        
-        val composeView = ComposeView(this).apply {
-            setContent {
-                MaterialTheme {
-                    OverlayUI(
-                        onClose = { hideOverlay() }
-                    )
-                }
-            }
-        }
-
-        // Setup per far funzionare Compose fuori da un'Activity
-        composeView.setViewTreeLifecycleOwner(this)
-        composeView.setViewTreeViewModelStoreOwner(this)
-        composeView.setViewTreeSavedStateRegistryOwner(this)
-
-        val params = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.END
-            x = 0
-            y = 200
-        }
-
-        val frameLayout = FrameLayout(this)
-        frameLayout.addView(composeView)
-        overlayView = frameLayout
-
-        windowManager.addView(overlayView, params)
-    }
-    
-    private fun hideOverlay() {
-        overlayView?.let {
-            windowManager.removeView(it)
-            overlayView = null
-        }
-    }
-
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        // Gestione eventi (es. catturare il testo a schermo)
-    }
-
-    override fun onInterrupt() {
-        // Gestione interruzione
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
-        store.clear()
-        hideOverlay()
-        if (instance == this) {
-            instance = null
-        }
-    }
-}
-
-@Composable
-fun OverlayUI(onClose: () -> Unit) {
-    var expanded by remember { mutableStateOf(false) }
-
-    if (!expanded) {
-        FloatingActionButton(
-            onClick = { expanded = true },
-            modifier = Modifier.padding(16.dp),
-            shape = CircleShape
-        ) {
-            Icon(Icons.Default.Android, contentDescription = "Open Agent")
-        }
-    } else {
-        Card(
-            modifier = Modifier
-                .padding(16.dp)
-                .width(300.dp)
-                .height(400.dp),
-            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
-        ) {
-            Column(modifier = Modifier.padding(16.dp).fillMaxSize()) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("Agent", style = MaterialTheme.typography.titleMedium)
-                    IconButton(onClick = { expanded = false }) {
-                        Icon(Icons.Default.Close, contentDescription = "Close")
-                    }
-                }
-                Spacer(modifier = Modifier.height(8.dp))
-                
-                // Qui andrà la chat e l'input
-                Box(modifier = Modifier.weight(1f).fillMaxWidth().background(Color.LightGray.copy(alpha = 0.2f))) {
-                    Text("Agent is ready...", modifier = Modifier.padding(8.dp))
-                }
-                
-                Spacer(modifier = Modifier.height(8.dp))
-                Button(onClick = { /* TODO: Esegui agente */ }, modifier = Modifier.fillMaxWidth()) {
-                    Text("Run Agent")
-                }
             }
         }
     }

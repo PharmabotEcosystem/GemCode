@@ -108,8 +108,6 @@ class AgentLoop(
         // 2. Recupera storico conversazione (Room)
         var currentHistory = memoryManager.getConversationState()?.trim() ?: ""
 
-        // 3. Costruisce il system prompt (Constitution + device status + tool manifest + RAG)
-        val systemPrompt = buildActiveSystemPrompt(ragContext)
 
         // 4. Aggiunge il messaggio utente alla cronologia
         currentHistory = if (currentHistory.isNotEmpty()) {
@@ -124,9 +122,12 @@ class AgentLoop(
         memoryManager.saveConversationState(currentHistory)
 
         while (iteration < maxIterations) {
+            // ── Update System Prompt with latest device status & context usage ──
+            val usageFraction = pruner.estimateTokens(currentHistory + ragContext).toFloat() / pruner.maxContextTokens
+            val updatedSystemPrompt = buildActiveSystemPrompt(ragContext, usageFraction)
 
             // ── Pruning check ──────────────────────────────────────────────
-            val pruneDecision = pruner.evaluatePruneNeed(currentHistory, ragContext, systemPrompt)
+            val pruneDecision = pruner.evaluatePruneNeed(currentHistory, ragContext, updatedSystemPrompt)
             if (pruneDecision.shouldPrune) {
                 Log.d(TAG, "Pruning history at iteration $iteration (${pruneDecision.estimatedTokens} tokens)")
                 currentHistory = pruner.pruneHistory(currentHistory, llmInference)
@@ -146,7 +147,7 @@ class AgentLoop(
             // ── LLM Inference ──────────────────────────────────────────────
             // NOTA mmap: MediaPipe chiama mmap() sul path del modello internamente.
             // NON caricare mai i pesi come ByteArray — vedi ResourceManager.
-            val llmResponse = llmInference.generateResponse(systemPrompt + currentHistory)
+            val llmResponse = llmInference.generateResponse(updatedSystemPrompt + currentHistory)
 
             // ── Tool call parsing ──────────────────────────────────────────
             val toolCall = extractToolCall(llmResponse)
@@ -206,8 +207,8 @@ class AgentLoop(
      * Il [SystemPromptBuilder] viene fornito da Hilt in produzione. Il fallback
      * legacy permette istanziazione diretta in test senza il grafo DI.
      */
-    fun buildActiveSystemPrompt(ragContext: String): String {
-        return systemPromptBuilder?.build(ragContext)
+    fun buildActiveSystemPrompt(ragContext: String, contextUsageFraction: Float = 0f): String {
+        return systemPromptBuilder?.build(ragContext, contextUsageFraction)
             ?: buildLegacySystemPrompt(ragContext)
     }
 
@@ -263,14 +264,19 @@ class AgentLoop(
         return try {
             val jsonElement = jsonParser.parseToJsonElement(match.groupValues[1]).jsonObject
             val toolName = jsonElement["tool"]?.jsonPrimitive?.content ?: return null
-            val parameters = jsonElement["parameters"] ?: JsonObject(emptyMap())
+            val parameters = try {
+                jsonElement["parameters"]?.jsonObject ?: JsonObject(emptyMap())
+            } catch (_: Exception) {
+                // If the LLM hallucinated a non-object for parameters (e.g. primitive/array)
+                JsonObject(emptyMap())
+            }
             ToolCall(toolName, parameters)
         } catch (_: Exception) { null }
     }
 
     private data class ToolCall(
         val name: String,
-        val params: kotlinx.serialization.json.JsonElement
+        val params: kotlinx.serialization.json.JsonObject
     )
 }
 

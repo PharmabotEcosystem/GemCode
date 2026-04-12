@@ -1,6 +1,6 @@
 package com.example.agent.tools
 
-import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 
 /**
  * Interfaccia base per tutti i Tool dell'agente.
@@ -12,8 +12,8 @@ interface Tool {
 
     /**
      * Esegue il tool con i parametri forniti dal modello.
-     * @param params Parametri in formato JSON
+     * @param params Parametri in formato JSON object
      * @return Il risultato dell'esecuzione (Observation)
      */
-    suspend fun execute(params: JsonElement): String
+    suspend fun execute(params: JsonObject): String
 }

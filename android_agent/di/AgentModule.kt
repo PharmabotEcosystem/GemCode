@@ -92,9 +92,9 @@ object AgentModule {
     @Provides
     @Singleton
     fun provideLocalMemoryManager(
-        @ApplicationContext context: Context,
+        db: AppDatabase,
         embeddingModel: EmbeddingModelWrapper
-    ): LocalMemoryManager = LocalMemoryManager(context, embeddingModel)
+    ): LocalMemoryManager = LocalMemoryManager(db, embeddingModel)
 
     // ── LlmInferenceWrapper (lazy-swappable Singleton) ────────────────────────
 

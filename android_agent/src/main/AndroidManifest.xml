@@ -139,7 +139,7 @@
         <!-- Accessibility Service per UIInteractTool                           -->
         <!-- ================================================================== -->
         <service
-            android:name=".tools.AgentAccessibilityService"
+            android:name=".service.AgentAccessibilityService"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
             android:exported="true">
             <intent-filter>

@@ -1,6 +1,5 @@
 package com.example.agent.memory
 
-import android.content.Context
 import androidx.room.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -45,15 +44,15 @@ abstract class AppDatabase : RoomDatabase() {
 
 /**
  * Gestisce la memoria a lungo termine dell'agente usando un database locale e ricerca vettoriale.
+ *
+ * NOTA: [db] deve essere il Singleton fornito da [com.example.agent.di.AgentModule].
+ * NON creare un secondo `Room.databaseBuilder()` qui — causa WAL lock conflict
+ * perché Room aprirebbe due connessioni sullo stesso file SQLite.
  */
 class LocalMemoryManager(
-    private val context: Context,
-    private val embeddingModel: EmbeddingModelWrapper // Wrapper fittizio per un modello TFLite (es. MiniLM)
+    private val db: AppDatabase,
+    private val embeddingModel: EmbeddingModelWrapper // Wrapper per un modello TFLite (es. MiniLM)
 ) {
-    private val db = Room.databaseBuilder(
-        context.applicationContext,
-        AppDatabase::class.java, "agent_memory.db"
-    ).build()
 
     /**
      * Salva una nuova memoria generando il suo embedding.

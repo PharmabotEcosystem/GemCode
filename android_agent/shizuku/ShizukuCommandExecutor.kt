@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import rikka.shizuku.Shizuku
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -238,16 +239,20 @@ class ShizukuCommandExecutor @Inject constructor() {
      * }
      * ```
      *
-     * @param command  Comando shell da eseguire.
-     * @param timeoutMs  Timeout opzionale in ms; se il processo non termina entro
-     *                   questo intervallo viene distrutto e si restituisce [CommandResult.Failure].
+     * @param command    Comando shell da eseguire.
+     * @param timeoutMs  Timeout opzionale in ms. Se il processo non restituisce
+     *                   [CommandOutput.ExitCode] entro questo intervallo, il Flow
+     *                   viene cancellato (Shizuku invia SIGTERM al processo figlio
+     *                   tramite il `finally { process.destroy() }` in [execute]),
+     *                   e viene restituito [CommandResult.Failure] con exit code -1
+     *                   e un messaggio stderr che descrive il timeout.
      *                   0 = nessun timeout (default).
      */
     suspend fun executeAndCollect(
         command: String,
         env: Array<String>? = null,
         workDir: String? = null,
-        @Suppress("UNUSED_PARAMETER") timeoutMs: Long = 0L
+        timeoutMs: Long = 0L
     ): CommandResult = withContext(Dispatchers.IO) {
         val status = checkStatus()
         if (status != ShizukuStatus.Available) {
@@ -260,16 +265,45 @@ class ShizukuCommandExecutor @Inject constructor() {
         var exitCode = -1
 
         try {
-            execute(command, env, workDir).collect { output ->
-                when (output) {
-                    is CommandOutput.Stdout -> stdoutLines.appendLine(output.line)
-                    is CommandOutput.Stderr -> stderrLines.appendLine(output.line)
-                    is CommandOutput.ExitCode -> exitCode = output.code
+            val timedOut: Boolean
+
+            if (timeoutMs > 0L) {
+                // withTimeoutOrNull cancels the Flow when the deadline passes;
+                // the `finally { process.destroy() }` block in execute() sends
+                // SIGTERM to the Shizuku child process automatically.
+                val result = withTimeoutOrNull(timeoutMs) {
+                    execute(command, env, workDir).collect { output ->
+                        when (output) {
+                            is CommandOutput.Stdout   -> stdoutLines.appendLine(output.line)
+                            is CommandOutput.Stderr   -> stderrLines.appendLine(output.line)
+                            is CommandOutput.ExitCode -> exitCode = output.code
+                        }
+                    }
                 }
+                timedOut = (result == null) // withTimeoutOrNull returns null on timeout
+            } else {
+                execute(command, env, workDir).collect { output ->
+                    when (output) {
+                        is CommandOutput.Stdout   -> stdoutLines.appendLine(output.line)
+                        is CommandOutput.Stderr   -> stderrLines.appendLine(output.line)
+                        is CommandOutput.ExitCode -> exitCode = output.code
+                    }
+                }
+                timedOut = false
             }
 
             val stdout = stdoutLines.toString().trimEnd()
-            val stderr = stderrLines.toString().trimEnd()
+            val stderr  = stderrLines.toString().trimEnd()
+
+            if (timedOut) {
+                val timeoutMsg = "Command timed out after ${timeoutMs}ms: $command"
+                Log.w(TAG, timeoutMsg)
+                return@withContext CommandResult.Failure(
+                    stdout = stdout,
+                    stderr = if (stderr.isNotEmpty()) "$stderr\n$timeoutMsg" else timeoutMsg,
+                    exitCode = -1
+                )
+            }
 
             return@withContext if (exitCode == 0) {
                 CommandResult.Success(stdout, stderr, exitCode)

@@ -1,5 +1,6 @@
 package com.example.agent.core
 
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -20,9 +21,34 @@ object ModelDownloader {
     fun downloadModel(urlStr: String, destFile: File): Flow<DownloadState> = flow {
         try {
             emit(DownloadState.Downloading(0f))
-            val url = URL(urlStr)
-            val connection = url.openConnection() as HttpURLConnection
-            connection.connect()
+            var currentUrl = urlStr
+            var connection: HttpURLConnection
+            var redirects = 0
+            val maxRedirects = 5
+
+            while (true) {
+                val url = URL(currentUrl)
+                connection = url.openConnection() as HttpURLConnection
+                connection.instanceFollowRedirects = true // Try auto-follow first
+
+                val status = connection.responseCode
+                if (status == HttpURLConnection.HTTP_MOVED_TEMP ||
+                    status == HttpURLConnection.HTTP_MOVED_PERM ||
+                    status == HttpURLConnection.HTTP_SEE_OTHER ||
+                    status == 307 || status == 308) {
+                    
+                    if (redirects >= maxRedirects) {
+                        emit(DownloadState.Error("Too many redirects"))
+                        return@flow
+                    }
+                    val newUrl = connection.getHeaderField("Location")
+                    Log.d("ModelDownloader", "Redirecting to: $newUrl")
+                    currentUrl = newUrl
+                    redirects++
+                    continue
+                }
+                break
+            }
 
             if (connection.responseCode != HttpURLConnection.HTTP_OK) {
                 emit(DownloadState.Error("Server returned HTTP ${connection.responseCode}"))

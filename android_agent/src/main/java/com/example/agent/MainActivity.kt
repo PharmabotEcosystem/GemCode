@@ -71,6 +71,13 @@ import rikka.shizuku.Shizuku
 import java.io.File
 import java.net.NetworkInterface
 
+import androidx.activity.viewModels
+import com.example.agent.orchestrator.AgentViewModel
+import com.example.agent.orchestrator.ChatRole
+import com.example.agent.mvi.AgentState
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+
 // ─── Navigation ───────────────────────────────────────────────────────────────
 
 enum class Screen { CHAT, MODELS, SETTINGS }
@@ -86,20 +93,17 @@ data class GemmaModel(
     val fileSizeMb: Int = 0,
 )
 
-data class ChatEntry(val role: String, val content: String)
-
 val AVAILABLE_MODELS = listOf(
-    // Gemma 4 — LiteRT-LM (.litertlm) · litert-community/HuggingFace · Apache 2.0
-    GemmaModel("Gemma 4 E2B (CPU)", "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm?download=true", "gemma4_e2b_it.litertlm", useGpu = false, maxTokens = 8192, fileSizeMb = 2580),
-    GemmaModel("Gemma 4 E2B (GPU)", "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm?download=true", "gemma4_e2b_it.litertlm", useGpu = true,  maxTokens = 8192, fileSizeMb = 2580),
-    GemmaModel("Gemma 4 E4B (CPU)", "https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it.litertlm?download=true", "gemma4_e4b_it.litertlm", useGpu = false, maxTokens = 8192, fileSizeMb = 3650),
-    GemmaModel("Gemma 4 E4B (GPU)", "https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it.litertlm?download=true", "gemma4_e4b_it.litertlm", useGpu = true,  maxTokens = 8192, fileSizeMb = 3650),
-    // Gemma 3 — MediaPipe tasks-genai (.task) · storage.googleapis.com · public
+    // Gemma 4 — LiteRT-LM (.litertlm)
+    GemmaModel("Gemma 4 E2B (CPU)", "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm?download=true", "gemma4_e2b_cpu.litertlm", useGpu = false, maxTokens = 8192, fileSizeMb = 2580),
+    GemmaModel("Gemma 4 E2B (GPU)", "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm?download=true", "gemma4_e2b_gpu.litertlm", useGpu = true,  maxTokens = 8192, fileSizeMb = 2580),
+    GemmaModel("Gemma 4 E4B (CPU)", "https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it.litertlm?download=true", "gemma4_e4b_cpu.litertlm", useGpu = false, maxTokens = 8192, fileSizeMb = 3650),
+    GemmaModel("Gemma 4 E4B (GPU)", "https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it.litertlm?download=true", "gemma4_e4b_gpu.litertlm", useGpu = true,  maxTokens = 8192, fileSizeMb = 3650),
+    // Gemma 3 — MediaPipe tasks-genai (.task)
     GemmaModel("Gemma 3 1B (CPU)", "https://storage.googleapis.com/mediapipe-models/llm_inference/gemma3-1b-it-cpu-int4/float16/1/gemma3-1b-it-cpu-int4.task", "gemma3_1b_cpu.task", useGpu = false, maxTokens = 8192, fileSizeMb = 700),
     GemmaModel("Gemma 3 1B (GPU)", "https://storage.googleapis.com/mediapipe-models/llm_inference/gemma3-1b-it-gpu-int4/float16/1/gemma3-1b-it-gpu-int4.task", "gemma3_1b_gpu.task", useGpu = true,  maxTokens = 8192, fileSizeMb = 700),
-    // Gemma 2B — formato legacy .bin
+    // Gemma 2B — legacy
     GemmaModel("Gemma 2B (CPU int4)", "https://storage.googleapis.com/mediapipe-models/llm_inference/gemma_cpu/v3/gemma-2b-it-cpu-int4.bin", "gemma2b_cpu_int4.bin", useGpu = false, maxTokens = 1024, fileSizeMb = 1500),
-    GemmaModel("Gemma 2B (GPU int4)", "https://storage.googleapis.com/mediapipe-models/llm_inference/gemma_gpu/v3/gemma-2b-it-gpu-int4.bin", "gemma2b_gpu_int4.bin", useGpu = true,  maxTokens = 1024, fileSizeMb = 1500),
 )
 
 // ─── MainActivity ─────────────────────────────────────────────────────────────
@@ -107,15 +111,9 @@ val AVAILABLE_MODELS = listOf(
 @AndroidEntryPoint
 class MainActivity : ComponentActivity(), Shizuku.OnRequestPermissionResultListener {
 
-    // ── Core deps ─────────────────────────────────────────────────────────────
-    private lateinit var agentLoop: AgentLoop
-    private lateinit var memoryManager: LocalMemoryManager
-    private var currentEngine: LlmInferenceWrapper = DummyLlmInference()
-    private var inferenceServer: InferenceHttpServer? = null
+    private val viewModel: AgentViewModel by viewModels()
 
     // ── Compose state ─────────────────────────────────────────────────────────
-    private var messages        by mutableStateOf<List<ChatEntry>>(emptyList())
-    private var isRunning       by mutableStateOf(false)
     private var modelIndex      by mutableStateOf(0)
     private var shizukuState    by mutableStateOf(ShizukuState.UNAVAILABLE)
     private var hasStorage      by mutableStateOf(false)
@@ -133,34 +131,31 @@ class MainActivity : ComponentActivity(), Shizuku.OnRequestPermissionResultListe
             .getOrDefault(ShizukuState.UNAVAILABLE)
         hasStorage = checkStorage()
 
+        // Auto-initialize selected model if it exists
+        val currentModel = AVAILABLE_MODELS[modelIndex]
+        val modelFile = File(filesDir, currentModel.filename)
+        if (modelFile.exists()) {
+            viewModel.initializeModel(modelFile.absolutePath, currentModel.useGpu)
+        }
+
         Shizuku.addRequestPermissionResultListener(this)
         Shizuku.addBinderReceivedListener(binderReceived)
         Shizuku.addBinderDeadListener(binderDead)
         refreshShizuku()
 
-        // Core dependencies
-        memoryManager = LocalMemoryManager(applicationContext, DummyEmbeddingModel())
-
-        val tools = buildTools()
-        currentEngine = loadEngine(modelIndex)
-        agentLoop = buildLoop(currentEngine, tools)
-        startServer(currentEngine)
-
-        lifecycleScope.launch {
-            messages = parseHistory(memoryManager.getConversationState() ?: "")
-        }
-
         setContent {
+            val agentState by viewModel.state.collectAsState()
+            val history by viewModel.conversationHistory.collectAsState()
+
             GemcodeTheme {
                 GemcodeApp(
-                    messages        = messages,
-                    isRunning       = isRunning,
+                    messages        = history.map { ChatEntry(it.role.name, it.content) },
+                    agentState      = agentState,
                     modelIndex      = modelIndex,
                     shizukuState    = shizukuState,
                     hasStorage      = hasStorage,
-                    serverPort      = InferenceHttpServer.DEFAULT_PORT,
-                    onSend          = { prompt -> runAgent(prompt, tools) },
-                    onSelectModel   = { idx -> selectModel(idx, tools) },
+                    onSend          = { prompt -> viewModel.sendPrompt(prompt) },
+                    onSelectModel   = { idx -> selectModel(idx) },
                     onRequestShizuku  = { Shizuku.requestPermission(100) },
                     onRequestStorage  = { requestStorage() },
                 )
@@ -187,56 +182,15 @@ class MainActivity : ComponentActivity(), Shizuku.OnRequestPermissionResultListe
         if (requestCode == 100) refreshShizuku()
     }
 
-    // ── Private helpers ───────────────────────────────────────────────────────
-
-    private fun buildTools(): List<Tool> {
-        val skillManager = SkillManager(applicationContext)
-        return listOf(
-            FileSystemTool(),
-            SettingsTool(),
-            UIInteractTool(),
-            SkillTool(skillManager),
-            GoogleIntegrationTool(applicationContext),
-            MCPTool(),
-        )
-    }
-
-    private fun loadEngine(index: Int): LlmInferenceWrapper {
-        val model = AVAILABLE_MODELS[index]
-        val file  = File(applicationContext.filesDir, model.filename)
-        return if (file.exists()) createEngine(applicationContext, file, model)
-               else DummyLlmInference()
-    }
-
-    private fun buildLoop(engine: LlmInferenceWrapper, tools: List<Tool>) =
-        AgentLoop(llmInference = engine, toolRegistry = DefaultToolRegistry(tools.toSet()), memoryManager = memoryManager)
-
-    private fun selectModel(idx: Int, tools: List<Tool>) {
+    private fun selectModel(idx: Int) {
         modelIndex = idx
         getSharedPreferences("gemcode", Context.MODE_PRIVATE)
             .edit().putInt("modelIndex", idx).apply()
-        val engine = loadEngine(idx)
-        currentEngine = engine
-        agentLoop = buildLoop(engine, tools)
-        startServer(engine)
-    }
-
-    private fun startServer(engine: LlmInferenceWrapper) {
-        inferenceServer?.stop()
-        inferenceServer = InferenceHttpServer(InferenceHttpServer.DEFAULT_PORT, engine).also { it.start() }
-    }
-
-    private fun runAgent(prompt: String, tools: List<Tool>) {
-        if (isRunning) return
-        isRunning = true
-        messages = messages + ChatEntry("User", prompt)
-        lifecycleScope.launch(Dispatchers.IO) {
-            agentLoop.run(prompt)
-            val updated = parseHistory(memoryManager.getConversationState() ?: "")
-            withContext(Dispatchers.Main) {
-                messages = updated
-                isRunning = false
-            }
+        
+        val model = AVAILABLE_MODELS[idx]
+        val file = File(filesDir, model.filename)
+        if (file.exists()) {
+            viewModel.initializeModel(file.absolutePath, model.useGpu)
         }
     }
 
@@ -290,11 +244,10 @@ fun GemcodeTheme(content: @Composable () -> Unit) {
 @Composable
 fun GemcodeApp(
     messages: List<ChatEntry>,
-    isRunning: Boolean,
+    agentState: AgentState,
     modelIndex: Int,
     shizukuState: ShizukuState,
     hasStorage: Boolean,
-    serverPort: Int,
     onSend: (String) -> Unit,
     onSelectModel: (Int) -> Unit,
     onRequestShizuku: () -> Unit,
@@ -302,6 +255,7 @@ fun GemcodeApp(
 ) {
     var screen by remember { mutableStateOf(Screen.CHAT) }
     val activeModel = AVAILABLE_MODELS[modelIndex]
+    val isBusy = agentState.isBusy
 
     Scaffold(
         contentWindowInsets = WindowInsets.safeDrawing,
@@ -320,7 +274,7 @@ fun GemcodeApp(
             when (target) {
                 Screen.CHAT     -> ChatScreen(
                     messages    = messages,
-                    isRunning   = isRunning,
+                    isRunning   = isBusy,
                     activeModel = activeModel,
                     onSend      = onSend,
                 )
@@ -332,7 +286,7 @@ fun GemcodeApp(
                     shizukuState      = shizukuState,
                     hasStorage        = hasStorage,
                     activeModel       = activeModel,
-                    serverPort        = serverPort,
+                    serverPort        = InferenceHttpServer.DEFAULT_PORT,
                     onRequestShizuku  = onRequestShizuku,
                     onRequestStorage  = onRequestStorage,
                 )
