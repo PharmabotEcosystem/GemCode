@@ -117,9 +117,9 @@ object ModelDownloader {
             }
 
             emit(DownloadState.Success(destFile))
-        } catch (_: CancellationException) {
+        } catch (e: CancellationException) {
             tmpFile.delete()
-            throw
+            throw e
         } catch (e: Exception) {
             tmpFile.delete()
             emit(DownloadState.Error(e.message ?: "Unknown download error"))
