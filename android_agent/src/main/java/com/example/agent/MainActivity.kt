@@ -54,6 +54,7 @@ import com.example.agent.core.LiteRtLmInference
 import com.example.agent.core.LlmInferenceWrapper
 import com.example.agent.core.MediaPipeLlmInference
 import com.example.agent.core.ModelDownloader
+import com.example.agent.core.Skill
 import com.example.agent.core.SkillManager
 import com.example.agent.memory.EmbeddingModelWrapper
 import com.example.agent.memory.LocalMemoryManager
@@ -70,6 +71,26 @@ import dagger.hilt.android.AndroidEntryPoint
 import rikka.shizuku.Shizuku
 import java.io.File
 import java.net.NetworkInterface
+import android.Manifest
+import android.accessibilityservice.AccessibilityServiceInfo
+import android.content.pm.PackageManager
+import android.provider.OpenableColumns
+import android.view.accessibility.AccessibilityManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.outlined.AttachFile
+import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Extension
+import androidx.compose.material.icons.outlined.Person
+import androidx.compose.ui.text.style.TextAlign
+import androidx.core.content.ContextCompat
+import kotlinx.serialization.json.*
 
 import androidx.activity.viewModels
 import com.example.agent.orchestrator.AgentViewModel
@@ -80,7 +101,7 @@ import androidx.compose.runtime.getValue
 
 // ─── Navigation ───────────────────────────────────────────────────────────────
 
-enum class Screen { CHAT, MODELS, SETTINGS }
+enum class Screen { CHAT, MODELS, SKILLS, PLUGINS, SETTINGS }
 
 // ─── Data models ──────────────────────────────────────────────────────────────
 
@@ -108,6 +129,34 @@ val AVAILABLE_MODELS = listOf(
     GemmaModel("Gemma 2B (CPU int4)", "https://storage.googleapis.com/mediapipe-models/llm_inference/gemma_cpu/v3/gemma-2b-it-cpu-int4.bin", "gemma2b_cpu_int4.bin", useGpu = false, maxTokens = 1024, fileSizeMb = 1500),
 )
 
+// ─── McpServer / Plugin Management ───────────────────────────────────────────
+
+data class McpServer(
+    val id: String = java.util.UUID.randomUUID().toString(),
+    val name: String,
+    val url: String,
+    val enabled: Boolean = true,
+)
+
+private fun List<McpServer>.toMcpJson(): String = buildJsonArray {
+    forEach { s ->
+        add(buildJsonObject {
+            put("id", s.id); put("name", s.name); put("url", s.url); put("enabled", s.enabled)
+        })
+    }
+}.toString()
+
+private fun String.parseMcpServers(): List<McpServer> = try {
+    Json.parseToJsonElement(this).jsonArray.map {
+        McpServer(
+            id      = it.jsonObject["id"]?.jsonPrimitive?.content ?: java.util.UUID.randomUUID().toString(),
+            name    = it.jsonObject["name"]?.jsonPrimitive?.content ?: "",
+            url     = it.jsonObject["url"]?.jsonPrimitive?.content ?: "",
+            enabled = it.jsonObject["enabled"]?.jsonPrimitive?.boolean ?: true,
+        )
+    }
+} catch (_: Exception) { emptyList() }
+
 // ─── MainActivity ─────────────────────────────────────────────────────────────
 
 @AndroidEntryPoint
@@ -116,9 +165,17 @@ class MainActivity : ComponentActivity(), Shizuku.OnRequestPermissionResultListe
     private val viewModel: AgentViewModel by viewModels()
 
     // ── Compose state ─────────────────────────────────────────────────────────
-    private var modelIndex      by mutableStateOf(0)
-    private var shizukuState    by mutableStateOf(ShizukuState.UNAVAILABLE)
-    private var hasStorage      by mutableStateOf(false)
+    private var modelIndex       by mutableStateOf(0)
+    private var shizukuState     by mutableStateOf(ShizukuState.UNAVAILABLE)
+    private var hasStorage       by mutableStateOf(false)
+    private var hasCamera        by mutableStateOf(false)
+    private var hasCalendar      by mutableStateOf(false)
+    private var hasContacts      by mutableStateOf(false)
+    private var hasAccessibility by mutableStateOf(false)
+    private var mcpServers       by mutableStateOf<List<McpServer>>(emptyList())
+    private val skillManager     by lazy { SkillManager(this) }
+    private var skills           by mutableStateOf<List<Skill>>(emptyList())
+    private lateinit var permissionLauncher: ActivityResultLauncher<Array<String>>
 
     private val binderReceived = Shizuku.OnBinderReceivedListener { refreshShizuku() }
     private val binderDead     = Shizuku.OnBinderDeadListener     { shizukuState = ShizukuState.UNAVAILABLE }
@@ -131,7 +188,18 @@ class MainActivity : ComponentActivity(), Shizuku.OnRequestPermissionResultListe
         modelIndex = (prefs.getInt("modelIndex", 0)).coerceIn(0, AVAILABLE_MODELS.lastIndex)
         shizukuState = runCatching { ShizukuState.valueOf(prefs.getString("shizuku", "") ?: "") }
             .getOrDefault(ShizukuState.UNAVAILABLE)
-        hasStorage = checkStorage()
+        hasStorage       = checkStorage()
+        hasCamera        = checkRuntimePermission(Manifest.permission.CAMERA)
+        hasCalendar      = checkRuntimePermission(Manifest.permission.READ_CALENDAR)
+        hasContacts      = checkRuntimePermission(Manifest.permission.READ_CONTACTS)
+        hasAccessibility = checkAccessibility()
+        mcpServers       = (prefs.getString("mcpServers", "[]") ?: "[]").parseMcpServers()
+        skills           = skillManager.getAllSkills()
+        permissionLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+            if (result[Manifest.permission.CAMERA]        == true) hasCamera   = true
+            if (result[Manifest.permission.READ_CALENDAR] == true) hasCalendar = true
+            if (result[Manifest.permission.READ_CONTACTS] == true) hasContacts = true
+        }
 
         // Auto-initialize selected model if it exists
         val currentModel = AVAILABLE_MODELS[modelIndex]
@@ -151,15 +219,49 @@ class MainActivity : ComponentActivity(), Shizuku.OnRequestPermissionResultListe
 
             GemcodeTheme {
                 GemcodeApp(
-                    messages        = history.map { ChatEntry(it.role.name, it.content) },
-                    agentState      = agentState,
-                    modelIndex      = modelIndex,
-                    shizukuState    = shizukuState,
-                    hasStorage      = hasStorage,
-                    onSend          = { prompt -> viewModel.sendPrompt(prompt) },
-                    onSelectModel   = { idx -> selectModel(idx) },
-                    onRequestShizuku  = { Shizuku.requestPermission(100) },
-                    onRequestStorage  = { requestStorage() },
+                    messages          = history.map { ChatEntry(it.role.name, it.content) },
+                    agentState        = agentState,
+                    modelIndex        = modelIndex,
+                    shizukuState      = shizukuState,
+                    hasStorage        = hasStorage,
+                    hasCamera         = hasCamera,
+                    hasCalendar       = hasCalendar,
+                    hasContacts       = hasContacts,
+                    hasAccessibility  = hasAccessibility,
+                    mcpServers        = mcpServers,
+                    onSend            = { prompt -> viewModel.sendPrompt(prompt) },
+                    onSelectModel     = { idx -> selectModel(idx) },
+                    onRequestShizuku     = { runCatching { Shizuku.requestPermission(100) } },
+                    onRequestStorage     = { requestStorage() },
+                    onRequestCamera      = { permissionLauncher.launch(arrayOf(Manifest.permission.CAMERA)) },
+                    onRequestCalendar    = { permissionLauncher.launch(arrayOf(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR)) },
+                    onRequestContacts    = { permissionLauncher.launch(arrayOf(Manifest.permission.READ_CONTACTS)) },
+                    onRequestAccessibility = { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
+                    onAddMcpServer    = { srv -> mcpServers = mcpServers + srv; saveMcpServers() },
+                    onDeleteMcpServer = { id -> mcpServers = mcpServers.filter { it.id != id }; saveMcpServers() },
+                    onToggleMcpServer = { id -> mcpServers = mcpServers.map { if (it.id == id) it.copy(enabled = !it.enabled) else it }; saveMcpServers() },
+                    skills         = skills,
+                    onToggleSkill  = { id, enabled ->
+                        lifecycleScope.launch(Dispatchers.IO) {
+                            skillManager.setEnabled(id, enabled)
+                            val loaded = skillManager.getAllSkills()
+                            withContext(Dispatchers.Main) { skills = loaded }
+                        }
+                    },
+                    onDeleteSkill  = { id ->
+                        lifecycleScope.launch(Dispatchers.IO) {
+                            skillManager.deleteSkill(id)
+                            val loaded = skillManager.getAllSkills()
+                            withContext(Dispatchers.Main) { skills = loaded }
+                        }
+                    },
+                    onCreateSkill  = { name, desc, inst ->
+                        lifecycleScope.launch(Dispatchers.IO) {
+                            skillManager.upsertSkill(name, desc, inst, "user", emptyList())
+                            val loaded = skillManager.getAllSkills()
+                            withContext(Dispatchers.Main) { skills = loaded }
+                        }
+                    },
                 )
             }
         }
@@ -167,9 +269,17 @@ class MainActivity : ComponentActivity(), Shizuku.OnRequestPermissionResultListe
 
     override fun onResume() {
         super.onResume()
-        hasStorage = checkStorage()
+        hasStorage       = checkStorage()
+        hasCamera        = checkRuntimePermission(Manifest.permission.CAMERA)
+        hasCalendar      = checkRuntimePermission(Manifest.permission.READ_CALENDAR)
+        hasContacts      = checkRuntimePermission(Manifest.permission.READ_CONTACTS)
+        hasAccessibility = checkAccessibility()
         getSharedPreferences("gemcode", Context.MODE_PRIVATE)
             .edit().putBoolean("storage", hasStorage).apply()
+        lifecycleScope.launch(Dispatchers.IO) {
+            val loaded = skillManager.getAllSkills()
+            withContext(Dispatchers.Main) { skills = loaded }
+        }
     }
 
     override fun onDestroy() {
@@ -211,6 +321,21 @@ class MainActivity : ComponentActivity(), Shizuku.OnRequestPermissionResultListe
                 .apply { data = Uri.parse("package:$packageName") })
         }
     }
+
+    private fun checkRuntimePermission(perm: String) =
+        ContextCompat.checkSelfPermission(this, perm) == PackageManager.PERMISSION_GRANTED
+
+    private fun checkAccessibility(): Boolean {
+        val am = getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
+        return am.isEnabled && am.getEnabledAccessibilityServiceList(
+            AccessibilityServiceInfo.FEEDBACK_ALL_MASK
+        ).any { it.resolveInfo.serviceInfo.packageName == packageName }
+    }
+
+    private fun saveMcpServers() {
+        getSharedPreferences("gemcode", Context.MODE_PRIVATE)
+            .edit().putString("mcpServers", mcpServers.toMcpJson()).apply()
+    }
 }
 
 // ─── Theme ────────────────────────────────────────────────────────────────────
@@ -249,10 +374,26 @@ fun GemcodeApp(
     modelIndex: Int,
     shizukuState: ShizukuState,
     hasStorage: Boolean,
+    hasCamera: Boolean,
+    hasCalendar: Boolean,
+    hasContacts: Boolean,
+    hasAccessibility: Boolean,
+    mcpServers: List<McpServer>,
     onSend: (String) -> Unit,
     onSelectModel: (Int) -> Unit,
     onRequestShizuku: () -> Unit,
     onRequestStorage: () -> Unit,
+    onRequestCamera: () -> Unit,
+    onRequestCalendar: () -> Unit,
+    onRequestContacts: () -> Unit,
+    onRequestAccessibility: () -> Unit,
+    onAddMcpServer: (McpServer) -> Unit,
+    onDeleteMcpServer: (String) -> Unit,
+    onToggleMcpServer: (String) -> Unit,
+    skills: List<Skill>,
+    onToggleSkill: (String, Boolean) -> Unit,
+    onDeleteSkill: (String) -> Unit,
+    onCreateSkill: (String, String, String) -> Unit,
 ) {
     var screen by remember { mutableStateOf(Screen.CHAT) }
     val activeModel = AVAILABLE_MODELS[modelIndex]
@@ -273,23 +414,43 @@ fun GemcodeApp(
             label = "screen",
         ) { target ->
             when (target) {
-                Screen.CHAT     -> ChatScreen(
+                Screen.CHAT    -> ChatScreen(
                     messages    = messages,
                     isRunning   = isBusy,
                     activeModel = activeModel,
                     onSend      = onSend,
                 )
-                Screen.MODELS   -> ModelsScreen(
-                    modelIndex      = modelIndex,
-                    onSelectModel   = onSelectModel,
+                Screen.MODELS  -> ModelsScreen(
+                    modelIndex    = modelIndex,
+                    onSelectModel = onSelectModel,
+                )
+                Screen.SKILLS  -> SkillsScreen(
+                    skills        = skills,
+                    onToggleSkill = onToggleSkill,
+                    onDeleteSkill = onDeleteSkill,
+                    onCreateSkill = onCreateSkill,
+                )
+                Screen.PLUGINS -> PluginsScreen(
+                    servers        = mcpServers,
+                    onAddServer    = onAddMcpServer,
+                    onDeleteServer = onDeleteMcpServer,
+                    onToggleServer = onToggleMcpServer,
                 )
                 Screen.SETTINGS -> SettingsScreen(
-                    shizukuState      = shizukuState,
-                    hasStorage        = hasStorage,
-                    activeModel       = activeModel,
-                    serverPort        = InferenceHttpServer.DEFAULT_PORT,
-                    onRequestShizuku  = onRequestShizuku,
-                    onRequestStorage  = onRequestStorage,
+                    shizukuState          = shizukuState,
+                    hasStorage            = hasStorage,
+                    hasCamera             = hasCamera,
+                    hasCalendar           = hasCalendar,
+                    hasContacts           = hasContacts,
+                    hasAccessibility      = hasAccessibility,
+                    activeModel           = activeModel,
+                    serverPort            = InferenceHttpServer.DEFAULT_PORT,
+                    onRequestShizuku      = onRequestShizuku,
+                    onRequestStorage      = onRequestStorage,
+                    onRequestCamera       = onRequestCamera,
+                    onRequestCalendar     = onRequestCalendar,
+                    onRequestContacts     = onRequestContacts,
+                    onRequestAccessibility = onRequestAccessibility,
                 )
             }
         }
@@ -301,9 +462,11 @@ fun GemcodeApp(
 @Composable
 fun GemcodeNavBar(current: Screen, onNavigate: (Screen) -> Unit) {
     NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceVariant) {
-        NavItem(Screen.CHAT,     "Chat",       Icons.Outlined.Chat,         current, onNavigate)
-        NavItem(Screen.MODELS,   "Modelli",    Icons.Outlined.Layers,       current, onNavigate)
-        NavItem(Screen.SETTINGS, "Impostazioni", Icons.Outlined.Settings,   current, onNavigate)
+        NavItem(Screen.CHAT,     "Chat",         Icons.Outlined.Chat,      current, onNavigate)
+        NavItem(Screen.MODELS,   "Modelli",      Icons.Outlined.Layers,      current, onNavigate)
+        NavItem(Screen.SKILLS,   "Skills",       Icons.Outlined.AutoAwesome, current, onNavigate)
+        NavItem(Screen.PLUGINS,  "Plugin",       Icons.Outlined.Extension,   current, onNavigate)
+        NavItem(Screen.SETTINGS, "Impostazioni", Icons.Outlined.Settings,  current, onNavigate)
     }
 }
 
@@ -331,7 +494,20 @@ fun ChatScreen(
     onSend: (String) -> Unit,
 ) {
     var input by remember { mutableStateOf("") }
+    var pendingAttachment by remember { mutableStateOf<Pair<String, String>?>(null) }
     val listState = rememberLazyListState()
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val attachLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val result = withContext(Dispatchers.IO) { readAttachment(context, uri) }
+                pendingAttachment = result
+            }
+        }
+    }
 
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
@@ -381,46 +557,91 @@ fun ChatScreen(
             tonalElevation = 3.dp,
             color = MaterialTheme.colorScheme.surfaceVariant,
         ) {
-            Row(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .navigationBarsPadding()
-                    .imePadding()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.Bottom,
+                    .imePadding(),
             ) {
-                TextField(
-                    value = input,
-                    onValueChange = { input = it },
-                    modifier = Modifier.weight(1f),
-                    placeholder = { Text("Scrivi un messaggio…", fontSize = 14.sp) },
-                    enabled = !isRunning,
-                    shape = RoundedCornerShape(24.dp),
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor   = MaterialTheme.colorScheme.surface,
-                        unfocusedContainerColor = MaterialTheme.colorScheme.surface,
-                        focusedIndicatorColor   = Color.Transparent,
-                        unfocusedIndicatorColor = Color.Transparent,
-                        disabledIndicatorColor  = Color.Transparent,
-                    ),
-                    maxLines = 5,
-                )
-                Spacer(Modifier.width(8.dp))
-                FilledIconButton(
-                    onClick = {
-                        if (input.isNotBlank()) {
-                            onSend(input.trim())
-                            input = ""
-                        }
-                    },
-                    enabled = input.isNotBlank() && !isRunning,
-                    modifier = Modifier.size(48.dp),
+                // Attachment chip
+                if (pendingAttachment != null) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        AssistChip(
+                            onClick = {},
+                            label = { Text(pendingAttachment!!.first, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            leadingIcon = { Icon(Icons.Outlined.AttachFile, null, Modifier.size(16.dp)) },
+                            trailingIcon = {
+                                IconButton(onClick = { pendingAttachment = null }, modifier = Modifier.size(20.dp)) {
+                                    Icon(Icons.Outlined.Close, "Rimuovi allegato", Modifier.size(14.dp))
+                                }
+                            },
+                        )
+                    }
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.Bottom,
                 ) {
-                    Icon(
-                        if (isRunning) Icons.Filled.Stop else Icons.Filled.Send,
-                        contentDescription = if (isRunning) "Elaborazione…" else "Invia",
-                        modifier = Modifier.size(20.dp),
+                    IconButton(
+                        onClick = { attachLauncher.launch("*/*") },
+                        enabled = !isRunning,
+                        modifier = Modifier.size(48.dp),
+                    ) {
+                        Icon(
+                            Icons.Outlined.AttachFile, "Allega file",
+                            tint = if (isRunning) MaterialTheme.colorScheme.outline
+                                   else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Spacer(Modifier.width(4.dp))
+                    TextField(
+                        value = input,
+                        onValueChange = { input = it },
+                        modifier = Modifier.weight(1f),
+                        placeholder = { Text("Scrivi un messaggio…", fontSize = 14.sp) },
+                        enabled = !isRunning,
+                        shape = RoundedCornerShape(24.dp),
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor   = MaterialTheme.colorScheme.surface,
+                            unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+                            focusedIndicatorColor   = Color.Transparent,
+                            unfocusedIndicatorColor = Color.Transparent,
+                            disabledIndicatorColor  = Color.Transparent,
+                        ),
+                        maxLines = 5,
                     )
+                    Spacer(Modifier.width(8.dp))
+                    FilledIconButton(
+                        onClick = {
+                            val hasContent = input.isNotBlank() || pendingAttachment != null
+                            if (hasContent) {
+                                val fullMessage = buildString {
+                                    pendingAttachment?.let { (name, content) ->
+                                        append("[Allegato: $name]")
+                                        if (content.isNotBlank()) { append("\n"); append(content) }
+                                        if (input.isNotBlank()) append("\n\n")
+                                    }
+                                    append(input.trim())
+                                }
+                                onSend(fullMessage)
+                                input = ""
+                                pendingAttachment = null
+                            }
+                        },
+                        enabled = (input.isNotBlank() || pendingAttachment != null) && !isRunning,
+                        modifier = Modifier.size(48.dp),
+                    ) {
+                        Icon(
+                            if (isRunning) Icons.Filled.Stop else Icons.Filled.Send,
+                            contentDescription = if (isRunning) "Elaborazione…" else "Invia",
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
                 }
             }
         }
@@ -655,6 +876,421 @@ private fun ModelCard(
     }
 }
 
+// ─── Plugins Screen (MCP Tool Management) ───────────────────────────────────
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun PluginsScreen(
+    servers: List<McpServer>,
+    onAddServer: (McpServer) -> Unit,
+    onDeleteServer: (String) -> Unit,
+    onToggleServer: (String) -> Unit,
+) {
+    var showAddDialog by remember { mutableStateOf(false) }
+
+    Column(Modifier.fillMaxSize()) {
+        TopAppBar(
+            title = { Text("Plugin MCP", fontWeight = FontWeight.SemiBold) },
+            colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
+            actions = {
+                IconButton(onClick = { showAddDialog = true }) {
+                    Icon(Icons.Filled.Add, "Aggiungi server MCP")
+                }
+            },
+        )
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+
+        if (servers.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.padding(32.dp),
+                ) {
+                    Icon(
+                        Icons.Outlined.Extension, null, Modifier.size(56.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    Text(
+                        "Nessun plugin configurato",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Aggiungi un server MCP per estendere le capacità dell'agente.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                    )
+                    Spacer(Modifier.height(20.dp))
+                    Button(onClick = { showAddDialog = true }) {
+                        Icon(Icons.Filled.Add, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Aggiungi server")
+                    }
+                }
+            }
+        } else {
+            LazyColumn(
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                items(servers, key = { it.id }) { server ->
+                    McpServerCard(
+                        server   = server,
+                        onDelete = { onDeleteServer(server.id) },
+                        onToggle = { onToggleServer(server.id) },
+                    )
+                }
+            }
+        }
+    }
+
+    if (showAddDialog) {
+        AddMcpServerDialog(
+            onDismiss = { showAddDialog = false },
+            onConfirm = { name, url ->
+                onAddServer(McpServer(name = name, url = url))
+                showAddDialog = false
+            },
+        )
+    }
+}
+
+@Composable
+private fun McpServerCard(
+    server: McpServer,
+    onDelete: () -> Unit,
+    onToggle: () -> Unit,
+) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Outlined.Extension, null, Modifier.size(22.dp),
+                tint = if (server.enabled) MaterialTheme.colorScheme.primary
+                       else MaterialTheme.colorScheme.outline,
+            )
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    server.name,
+                    fontWeight = FontWeight.SemiBold,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (server.enabled) MaterialTheme.colorScheme.onSurface
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    server.url,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Switch(checked = server.enabled, onCheckedChange = { onToggle() })
+            Spacer(Modifier.width(4.dp))
+            IconButton(onClick = onDelete) {
+                Icon(
+                    Icons.Outlined.Delete, "Elimina", Modifier.size(20.dp),
+                    tint = MaterialTheme.colorScheme.error,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AddMcpServerDialog(
+    onDismiss: () -> Unit,
+    onConfirm: (name: String, url: String) -> Unit,
+) {
+    var name by remember { mutableStateOf("") }
+    var url  by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Aggiungi server MCP") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Nome") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = url,
+                    onValueChange = { url = it },
+                    label = { Text("URL (es. http://192.168.1.1:3000)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { if (name.isNotBlank() && url.isNotBlank()) onConfirm(name.trim(), url.trim()) },
+                enabled = name.isNotBlank() && url.isNotBlank(),
+            ) { Text("Aggiungi") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Annulla") }
+        },
+    )
+}
+
+// ─── Skills Screen ────────────────────────────────────────────────────────────
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SkillsScreen(
+    skills: List<Skill>,
+    onToggleSkill: (id: String, enabled: Boolean) -> Unit,
+    onDeleteSkill: (id: String) -> Unit,
+    onCreateSkill: (name: String, description: String, instructions: String) -> Unit,
+) {
+    var showCreateDialog by remember { mutableStateOf(false) }
+
+    Column(Modifier.fillMaxSize()) {
+        TopAppBar(
+            title = { Text("Skills", fontWeight = FontWeight.SemiBold) },
+            colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
+            actions = {
+                IconButton(onClick = { showCreateDialog = true }) {
+                    Icon(Icons.Filled.Add, "Crea skill")
+                }
+            },
+        )
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+
+        if (skills.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.padding(32.dp),
+                ) {
+                    Icon(
+                        Icons.Outlined.AutoAwesome, null, Modifier.size(56.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    Text(
+                        "Nessuna skill ancora",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Gemma crea skill automaticamente durante i task complessi. " +
+                        "Puoi anche crearne una manualmente con il pulsante +.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                    )
+                    Spacer(Modifier.height(20.dp))
+                    Button(onClick = { showCreateDialog = true }) {
+                        Icon(Icons.Filled.Add, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Crea skill")
+                    }
+                }
+            }
+        } else {
+            LazyColumn(
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                items(skills, key = { it.id }) { skill ->
+                    SkillCard(
+                        skill    = skill,
+                        onToggle = { onToggleSkill(skill.id, !skill.enabled) },
+                        onDelete = { onDeleteSkill(skill.id) },
+                    )
+                }
+            }
+        }
+    }
+
+    if (showCreateDialog) {
+        CreateSkillDialog(
+            onDismiss = { showCreateDialog = false },
+            onConfirm = { name, desc, inst ->
+                onCreateSkill(name, desc, inst)
+                showCreateDialog = false
+            },
+        )
+    }
+}
+
+@Composable
+private fun SkillCard(
+    skill: Skill,
+    onToggle: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            skill.name,
+                            fontWeight = FontWeight.SemiBold,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (skill.enabled) MaterialTheme.colorScheme.onSurface
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        val (authorIcon, authorLabel, authorColor) =
+                            if (skill.createdBy == "gemma")
+                                Triple(Icons.Outlined.SmartToy, "Gemma", MaterialTheme.colorScheme.primary)
+                            else
+                                Triple(Icons.Outlined.Person, "Utente", MaterialTheme.colorScheme.secondary)
+                        SuggestionChip(
+                            onClick = {},
+                            label = { Text(authorLabel, fontSize = 10.sp) },
+                            icon = { Icon(authorIcon, null, Modifier.size(12.dp)) },
+                            colors = SuggestionChipDefaults.suggestionChipColors(
+                                containerColor  = authorColor.copy(alpha = 0.12f),
+                                labelColor      = authorColor,
+                                iconContentColor = authorColor,
+                            ),
+                            modifier = Modifier.height(24.dp),
+                        )
+                    }
+                    Text(
+                        skill.description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Switch(checked = skill.enabled, onCheckedChange = { onToggle() })
+                Spacer(Modifier.width(4.dp))
+                IconButton(onClick = onDelete) {
+                    Icon(Icons.Outlined.Delete, "Elimina", Modifier.size(20.dp),
+                        tint = MaterialTheme.colorScheme.error)
+                }
+            }
+
+            // Tags
+            if (skill.tags.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    skill.tags.take(4).forEach { tag ->
+                        AssistChip(
+                            onClick = {},
+                            label = { Text(tag, fontSize = 10.sp) },
+                            modifier = Modifier.height(24.dp),
+                        )
+                    }
+                }
+            }
+
+            // Usage + expand toggle
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                if (skill.usageCount > 0) {
+                    Text(
+                        "Usata ${skill.usageCount}×",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = { expanded = !expanded }) {
+                    Text(if (expanded) "Nascondi" else "Istruzioni", fontSize = 12.sp)
+                    Icon(
+                        if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                        null, Modifier.size(16.dp),
+                    )
+                }
+            }
+
+            // Instructions (expandable)
+            if (expanded && skill.instructions.isNotBlank()) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+                Spacer(Modifier.height(8.dp))
+                Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surface) {
+                    Text(
+                        skill.instructions,
+                        modifier = Modifier.padding(12.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CreateSkillDialog(
+    onDismiss: () -> Unit,
+    onConfirm: (name: String, description: String, instructions: String) -> Unit,
+) {
+    var name by remember { mutableStateOf("") }
+    var desc by remember { mutableStateOf("") }
+    var inst by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Crea skill") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Nome (es. daily_report)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = desc,
+                    onValueChange = { desc = it },
+                    label = { Text("Descrizione") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                OutlinedTextField(
+                    value = inst,
+                    onValueChange = { inst = it },
+                    label = { Text("Istruzioni (passaggi dettagliati)") },
+                    minLines = 4,
+                    maxLines = 8,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    if (name.isNotBlank() && desc.isNotBlank() && inst.isNotBlank())
+                        onConfirm(name.trim(), desc.trim(), inst.trim())
+                },
+                enabled = name.isNotBlank() && desc.isNotBlank() && inst.isNotBlank(),
+            ) { Text("Crea") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Annulla") }
+        },
+    )
+}
+
 // ─── Settings Screen ──────────────────────────────────────────────────────────
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -662,10 +1298,18 @@ private fun ModelCard(
 fun SettingsScreen(
     shizukuState: ShizukuState,
     hasStorage: Boolean,
+    hasCamera: Boolean,
+    hasCalendar: Boolean,
+    hasContacts: Boolean,
+    hasAccessibility: Boolean,
     activeModel: GemmaModel,
     serverPort: Int,
     onRequestShizuku: () -> Unit,
     onRequestStorage: () -> Unit,
+    onRequestCamera: () -> Unit,
+    onRequestCalendar: () -> Unit,
+    onRequestContacts: () -> Unit,
+    onRequestAccessibility: () -> Unit,
 ) {
     Column(Modifier.fillMaxSize()) {
         TopAppBar(
@@ -704,12 +1348,40 @@ fun SettingsScreen(
                         granted     = shizukuState == ShizukuState.AUTHORIZED,
                         onRequest   = onRequestShizuku,
                     )
-                    Spacer(Modifier.height(8.dp))
+                    HorizontalDivider(Modifier.padding(horizontal = 12.dp), color = MaterialTheme.colorScheme.outline.copy(alpha = 0.15f))
                     PermissionRow(
                         label       = "Storage completo (FileSystemTool)",
                         description = "Necessario per leggere e scrivere file ovunque nel dispositivo",
                         granted     = hasStorage,
                         onRequest   = onRequestStorage,
+                    )
+                    HorizontalDivider(Modifier.padding(horizontal = 12.dp), color = MaterialTheme.colorScheme.outline.copy(alpha = 0.15f))
+                    PermissionRow(
+                        label       = "Fotocamera (CameraTool)",
+                        description = "Permette all'agente di scattare foto e analizzare immagini",
+                        granted     = hasCamera,
+                        onRequest   = onRequestCamera,
+                    )
+                    HorizontalDivider(Modifier.padding(horizontal = 12.dp), color = MaterialTheme.colorScheme.outline.copy(alpha = 0.15f))
+                    PermissionRow(
+                        label       = "Calendario (GoogleIntegrationTool)",
+                        description = "Permette di leggere e scrivere eventi sul calendario",
+                        granted     = hasCalendar,
+                        onRequest   = onRequestCalendar,
+                    )
+                    HorizontalDivider(Modifier.padding(horizontal = 12.dp), color = MaterialTheme.colorScheme.outline.copy(alpha = 0.15f))
+                    PermissionRow(
+                        label       = "Contatti (GoogleIntegrationTool)",
+                        description = "Permette di leggere i contatti per l'integrazione email",
+                        granted     = hasContacts,
+                        onRequest   = onRequestContacts,
+                    )
+                    HorizontalDivider(Modifier.padding(horizontal = 12.dp), color = MaterialTheme.colorScheme.outline.copy(alpha = 0.15f))
+                    PermissionRow(
+                        label       = "Servizio accessibilità (UIInteractTool)",
+                        description = "Permette all'agente di interagire con altre app tramite accessibilità",
+                        granted     = hasAccessibility,
+                        onRequest   = onRequestAccessibility,
                     )
                 }
             }
@@ -837,6 +1509,24 @@ private fun getLocalIp(): String = runCatching {
         .firstOrNull { !it.isLoopbackAddress && it.hostAddress?.contains('.') == true }
         ?.hostAddress ?: "localhost"
 }.getOrDefault("localhost")
+
+private fun readAttachment(context: Context, uri: Uri): Pair<String, String> {
+    val name = context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+        val col = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+        if (cursor.moveToFirst() && col >= 0) cursor.getString(col) else null
+    } ?: uri.lastPathSegment ?: "allegato"
+
+    val mimeType = context.contentResolver.getType(uri) ?: ""
+    val content = if (!mimeType.startsWith("image/") && !mimeType.startsWith("video/")) {
+        runCatching {
+            context.contentResolver.openInputStream(uri)?.bufferedReader()?.use {
+                it.readText().take(6000)
+            } ?: ""
+        }.getOrDefault("")
+    } else ""
+
+    return Pair(name, content)
+}
 
 // ─── Dummy implementations ────────────────────────────────────────────────────
 

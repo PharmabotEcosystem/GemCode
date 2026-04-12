@@ -118,9 +118,14 @@ abstract class ToolsModule {
          */
         @Provides
         @Singleton
+        fun provideSkillManager(@ApplicationContext context: Context): SkillManager =
+            SkillManager(context)
+
+        @Provides
+        @Singleton
         @IntoSet
-        fun provideSkillTool(@ApplicationContext context: Context): Tool =
-            SkillTool(SkillManager(context))
+        fun provideSkillTool(skillManager: SkillManager): Tool =
+            SkillTool(skillManager)
 
         /**
          * Tool per integrazione con Google Calendar e Gmail via intent.

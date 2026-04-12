@@ -3,6 +3,9 @@ package com.example.agent.service
 import android.util.Log
 import com.example.agent.core.LlmInferenceWrapper
 import fi.iki.elonen.NanoHTTPD
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import org.json.JSONObject
@@ -52,6 +55,8 @@ class InferenceHttpServer(
     private val llmInference: LlmInferenceWrapper,
 ) : NanoHTTPD(port) {
 
+    private val serverScope = kotlinx.coroutines.CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     override fun start() {
         super.start(SOCKET_READ_TIMEOUT, false /* daemon thread = false → sopravvive all'Activity */)
         Log.i(TAG, "Inference HTTP server started on port $port")
@@ -59,6 +64,7 @@ class InferenceHttpServer(
 
     override fun stop() {
         super.stop()
+        serverScope.cancel()
         Log.i(TAG, "Inference HTTP server stopped")
     }
 
@@ -142,8 +148,9 @@ class InferenceHttpServer(
         }
         promptBuilder.append("<start_of_turn>model\n")
 
-        // Inferenza locale — bloccante (NanoHTTPD ha un thread pool proprio)
-        val responseText = runBlocking {
+        // Inferenza locale — NanoHTTPD non supporta risposte async, quindi blocchiamo
+        // il thread corrente usando Dispatchers.IO per non saturare altri dispatcher.
+        val responseText = runBlocking(Dispatchers.IO) {
             llmInference.generateResponse(promptBuilder.toString())
         }
 

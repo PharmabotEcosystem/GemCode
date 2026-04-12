@@ -7,6 +7,7 @@ import com.example.agent.core.ContextPruningManager
 import com.example.agent.core.DeviceStatusProvider
 import com.example.agent.core.LlmInferenceWrapper
 import com.example.agent.core.SafetyGuard
+import com.example.agent.core.SkillManager
 import com.example.agent.core.SystemPromptBuilder
 import com.example.agent.memory.AppDatabase
 import com.example.agent.memory.EmbeddingModelWrapper
@@ -159,8 +160,9 @@ object AgentModule {
     @Singleton
     fun provideSystemPromptBuilder(
         deviceStatusProvider: DeviceStatusProvider,
-        toolRegistry: ToolRegistry
-    ): SystemPromptBuilder = SystemPromptBuilder(deviceStatusProvider, toolRegistry)
+        toolRegistry: ToolRegistry,
+        skillManager: SkillManager,
+    ): SystemPromptBuilder = SystemPromptBuilder(deviceStatusProvider, toolRegistry, skillManager)
 
     // ── SafetyGuard ────────────────────────────────────────────────────────────
 

@@ -40,7 +40,8 @@ import javax.inject.Singleton
 @Singleton
 class SystemPromptBuilder @Inject constructor(
     private val deviceStatusProvider: DeviceStatusProvider,
-    private val toolRegistry: ToolRegistry
+    private val toolRegistry: ToolRegistry,
+    private val skillManager: SkillManager,
 ) {
 
     companion object {
@@ -207,8 +208,15 @@ RULE 7.4 — SHIZUKU UNAVAILABLE: If the Device Status shows Shizuku as
             if (ragContext.isNotBlank() && ragContext != "No previous context.") {
                 appendLine("RELEVANT CONTEXT FROM LOCAL MEMORY (vector search results):")
                 appendLine(ragContext)
+                appendLine()
             }
-            appendLine()
+
+            // ── Layer 5: Active Skills (dal SkillManager) ─────────────────
+            val skillsSection = skillManager.buildSkillsPromptSection()
+            if (skillsSection.isNotBlank()) {
+                appendLine(skillsSection)
+                appendLine()
+            }
         }.trimEnd()
     }
 

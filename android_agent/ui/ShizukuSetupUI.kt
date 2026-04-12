@@ -80,12 +80,13 @@ fun ShizukuSetupCard(
  * Funzione helper per controllare lo stato attuale di Shizuku.
  */
 fun checkShizukuState(): ShizukuState {
-    if (!Shizuku.pingBinder()) {
-        return ShizukuState.UNAVAILABLE
-    }
-    return if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
-        ShizukuState.AUTHORIZED
-    } else {
-        ShizukuState.UNAUTHORIZED
+    return try {
+        if (!Shizuku.pingBinder()) return ShizukuState.UNAVAILABLE
+        if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED)
+            ShizukuState.AUTHORIZED
+        else
+            ShizukuState.UNAUTHORIZED
+    } catch (_: Exception) {
+        ShizukuState.UNAVAILABLE
     }
 }
