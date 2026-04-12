@@ -107,7 +107,7 @@ enum class Screen { CHAT, MODELS, SKILLS, PLUGINS, SETTINGS }
 
 data class ChatEntry(val role: String, val content: String)
 
-enum class ModelBackend { LITERT, MEDIAPIPE, LM_STUDIO }
+enum class ModelBackend { LITERT, MEDIAPIPE, LM_STUDIO, OLLAMA }
 
 data class GemmaModel(
     val name: String,
@@ -120,18 +120,21 @@ data class GemmaModel(
 )
 
 val AVAILABLE_MODELS = listOf(
-    // LM Studio — server OpenAI-compatibile sul PC (modelli GGUF, nessun download sul device)
-    GemmaModel("LM Studio (PC locale)", backend = ModelBackend.LM_STUDIO, maxTokens = 32768),
-    // Gemma 4 — LiteRT-LM (.litertlm) — richiede download sul dispositivo
+    // ── Server remoto (nessun download, inferenza su PC o Termux) ────────────
+    GemmaModel("Ollama (locale Termux)",  backend = ModelBackend.OLLAMA,     maxTokens = 32768),
+    GemmaModel("LM Studio (PC locale)",   backend = ModelBackend.LM_STUDIO,  maxTokens = 32768),
+    // ── Gemma 4 — LiteRT-LM (.litertlm) — download HuggingFace litert-community ──
     GemmaModel("Gemma 4 E2B (CPU)", "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm?download=true", "gemma4_e2b_cpu.litertlm", useGpu = false, maxTokens = 8192, fileSizeMb = 2580),
     GemmaModel("Gemma 4 E2B (GPU)", "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm?download=true", "gemma4_e2b_gpu.litertlm", useGpu = true,  maxTokens = 8192, fileSizeMb = 2580),
     GemmaModel("Gemma 4 E4B (CPU)", "https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it.litertlm?download=true", "gemma4_e4b_cpu.litertlm", useGpu = false, maxTokens = 8192, fileSizeMb = 3650),
     GemmaModel("Gemma 4 E4B (GPU)", "https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it.litertlm?download=true", "gemma4_e4b_gpu.litertlm", useGpu = true,  maxTokens = 8192, fileSizeMb = 3650),
-    // Gemma 3 — MediaPipe tasks-genai (.task)
-    GemmaModel("Gemma 3 1B (CPU)", "https://storage.googleapis.com/mediapipe-models/llm_inference/gemma3-1b-it-cpu-int4/float16/1/gemma3-1b-it-cpu-int4.task", "gemma3_1b_cpu.task", useGpu = false, maxTokens = 8192, fileSizeMb = 700),
-    GemmaModel("Gemma 3 1B (GPU)", "https://storage.googleapis.com/mediapipe-models/llm_inference/gemma3-1b-it-gpu-int4/float16/1/gemma3-1b-it-gpu-int4.task", "gemma3_1b_gpu.task", useGpu = true,  maxTokens = 8192, fileSizeMb = 700),
-    // Gemma 2B — legacy
-    GemmaModel("Gemma 2B (CPU int4)", "https://storage.googleapis.com/mediapipe-models/llm_inference/gemma_cpu/v3/gemma-2b-it-cpu-int4.bin", "gemma2b_cpu_int4.bin", useGpu = false, maxTokens = 1024, fileSizeMb = 1500),
+    // ── Gemma 3 — LiteRT-LM (rimpiazza Google Storage, ora su HuggingFace) ──
+    GemmaModel("Gemma 3 1B (CPU)", "https://huggingface.co/litert-community/gemma-3-1b-it-litert-lm/resolve/main/gemma-3-1b-it.litertlm?download=true", "gemma3_1b_cpu.litertlm", useGpu = false, maxTokens = 8192, fileSizeMb = 700),
+    GemmaModel("Gemma 3 1B (GPU)", "https://huggingface.co/litert-community/gemma-3-1b-it-litert-lm/resolve/main/gemma-3-1b-it.litertlm?download=true", "gemma3_1b_gpu.litertlm", useGpu = true,  maxTokens = 8192, fileSizeMb = 700),
+    // ── Gemma 3n (Nano) — ottimizzato per mobile, forma fattore minima ────────
+    GemmaModel("Gemma 3n E1B (CPU)", "https://huggingface.co/litert-community/gemma-3n-E1B-it-litert-lm/resolve/main/gemma-3n-E1B-it.litertlm?download=true", "gemma3n_e1b_cpu.litertlm", useGpu = false, maxTokens = 8192, fileSizeMb = 540),
+    GemmaModel("Gemma 3n E1B (GPU)", "https://huggingface.co/litert-community/gemma-3n-E1B-it-litert-lm/resolve/main/gemma-3n-E1B-it.litertlm?download=true", "gemma3n_e1b_gpu.litertlm", useGpu = true,  maxTokens = 8192, fileSizeMb = 540),
+    GemmaModel("Gemma 3n E4B (CPU)", "https://huggingface.co/litert-community/gemma-3n-E4B-it-litert-lm/resolve/main/gemma-3n-E4B-it.litertlm?download=true", "gemma3n_e4b_cpu.litertlm", useGpu = false, maxTokens = 8192, fileSizeMb = 2900),
 )
 
 // ─── McpServer / Plugin Management ───────────────────────────────────────────
@@ -172,6 +175,8 @@ class MainActivity : ComponentActivity(), Shizuku.OnRequestPermissionResultListe
     // ── Compose state ─────────────────────────────────────────────────────────
     private var modelIndex       by mutableStateOf(0)
     private var lmStudioUrl      by mutableStateOf("http://192.168.1.100:1234")
+    private var ollamaUrl        by mutableStateOf("http://localhost:11434")
+    private var ollamaModel      by mutableStateOf("gemma4:2b-instruct-q4_0")
     private var shizukuState     by mutableStateOf(ShizukuState.UNAVAILABLE)
     private var hasStorage       by mutableStateOf(false)
     private var hasCamera        by mutableStateOf(false)
@@ -193,6 +198,8 @@ class MainActivity : ComponentActivity(), Shizuku.OnRequestPermissionResultListe
         val prefs = getSharedPreferences("gemcode", Context.MODE_PRIVATE)
         modelIndex   = (prefs.getInt("modelIndex", 0)).coerceIn(0, AVAILABLE_MODELS.lastIndex)
         lmStudioUrl  = prefs.getString("lmStudioUrl", "http://192.168.1.100:1234") ?: "http://192.168.1.100:1234"
+        ollamaUrl    = prefs.getString("ollamaUrl", "http://localhost:11434")        ?: "http://localhost:11434"
+        ollamaModel  = prefs.getString("ollamaModel", "gemma4:2b-instruct-q4_0")    ?: "gemma4:2b-instruct-q4_0"
         shizukuState = runCatching { ShizukuState.valueOf(prefs.getString("shizuku", "") ?: "") }
             .getOrDefault(ShizukuState.UNAVAILABLE)
         hasStorage       = checkStorage()
@@ -213,6 +220,8 @@ class MainActivity : ComponentActivity(), Shizuku.OnRequestPermissionResultListe
         when (currentModel.backend) {
             ModelBackend.LM_STUDIO ->
                 viewModel.initializeModel("lmstudio://$lmStudioUrl", false)
+            ModelBackend.OLLAMA ->
+                viewModel.initializeModel("ollama://$ollamaUrl|$ollamaModel", false)
             else -> {
                 val modelFile = File(filesDir, currentModel.filename)
                 if (modelFile.exists()) {
@@ -236,6 +245,8 @@ class MainActivity : ComponentActivity(), Shizuku.OnRequestPermissionResultListe
                     agentState        = agentState,
                     modelIndex        = modelIndex,
                     lmStudioUrl       = lmStudioUrl,
+                    ollamaUrl         = ollamaUrl,
+                    ollamaModel       = ollamaModel,
                     shizukuState      = shizukuState,
                     hasStorage        = hasStorage,
                     hasCamera         = hasCamera,
@@ -246,6 +257,7 @@ class MainActivity : ComponentActivity(), Shizuku.OnRequestPermissionResultListe
                     onSend            = { prompt -> viewModel.sendPrompt(prompt) },
                     onSelectModel     = { idx -> selectModel(idx) },
                     onLmStudioUrlChange = { url -> saveLmStudioUrl(url) },
+                    onOllamaConfigChange = { url, mdl -> saveOllamaConfig(url, mdl) },
                     onRequestShizuku     = { runCatching { Shizuku.requestPermission(100) } },
                     onRequestStorage     = { requestStorage() },
                     onRequestCamera      = { permissionLauncher.launch(arrayOf(Manifest.permission.CAMERA)) },
@@ -316,12 +328,24 @@ class MainActivity : ComponentActivity(), Shizuku.OnRequestPermissionResultListe
         when (model.backend) {
             ModelBackend.LM_STUDIO ->
                 viewModel.initializeModel("lmstudio://$lmStudioUrl", false)
+            ModelBackend.OLLAMA ->
+                viewModel.initializeModel("ollama://$ollamaUrl|$ollamaModel", false)
             else -> {
                 val file = File(filesDir, model.filename)
                 if (file.exists()) {
                     viewModel.initializeModel(file.absolutePath, model.useGpu)
                 }
             }
+        }
+    }
+
+    private fun saveOllamaConfig(url: String, model: String) {
+        ollamaUrl = url
+        ollamaModel = model
+        getSharedPreferences("gemcode", Context.MODE_PRIVATE).edit()
+            .putString("ollamaUrl", url).putString("ollamaModel", model).apply()
+        if (AVAILABLE_MODELS[modelIndex].backend == ModelBackend.OLLAMA) {
+            viewModel.initializeModel("ollama://$url|$model", false)
         }
     }
 
@@ -402,6 +426,8 @@ fun GemcodeApp(
     agentState: AgentState,
     modelIndex: Int,
     lmStudioUrl: String,
+    ollamaUrl: String,
+    ollamaModel: String,
     shizukuState: ShizukuState,
     hasStorage: Boolean,
     hasCamera: Boolean,
@@ -412,6 +438,7 @@ fun GemcodeApp(
     onSend: (String) -> Unit,
     onSelectModel: (Int) -> Unit,
     onLmStudioUrlChange: (String) -> Unit,
+    onOllamaConfigChange: (String, String) -> Unit,
     onRequestShizuku: () -> Unit,
     onRequestStorage: () -> Unit,
     onRequestCamera: () -> Unit,
@@ -454,6 +481,8 @@ fun GemcodeApp(
                 Screen.MODELS  -> ModelsScreen(
                     modelIndex    = modelIndex,
                     lmStudioUrl   = lmStudioUrl,
+                    ollamaUrl     = ollamaUrl,
+                    ollamaModel   = ollamaModel,
                     onSelectModel = onSelectModel,
                 )
                 Screen.SKILLS  -> SkillsScreen(
@@ -479,6 +508,9 @@ fun GemcodeApp(
                     serverPort            = InferenceHttpServer.DEFAULT_PORT,
                     lmStudioUrl           = lmStudioUrl,
                     onLmStudioUrlChange   = onLmStudioUrlChange,
+                    ollamaUrl             = ollamaUrl,
+                    ollamaModel           = ollamaModel,
+                    onOllamaConfigChange  = onOllamaConfigChange,
                     onRequestShizuku      = onRequestShizuku,
                     onRequestStorage      = onRequestStorage,
                     onRequestCamera       = onRequestCamera,
@@ -784,7 +816,7 @@ private fun TypingIndicator() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ModelsScreen(modelIndex: Int, lmStudioUrl: String, onSelectModel: (Int) -> Unit) {
+fun ModelsScreen(modelIndex: Int, lmStudioUrl: String, ollamaUrl: String, ollamaModel: String, onSelectModel: (Int) -> Unit) {
     val context = LocalContext.current
     val scope   = rememberCoroutineScope()
     val downloadStates = remember { mutableStateMapOf<Int, DownloadState>() }
@@ -802,18 +834,23 @@ fun ModelsScreen(modelIndex: Int, lmStudioUrl: String, onSelectModel: (Int) -> U
         ) {
             AVAILABLE_MODELS.forEachIndexed { idx, model ->
                 item(key = idx) {
-                    // LM Studio è sempre disponibile (nessun file da scaricare)
-                    val isLocal  = if (model.backend == ModelBackend.LM_STUDIO) true
+                    val isServerModel = model.backend == ModelBackend.LM_STUDIO || model.backend == ModelBackend.OLLAMA
+                    val isLocal  = if (isServerModel) true
                                    else remember(downloadStates[idx]) { File(context.filesDir, model.filename).exists() }
                     val isActive = idx == modelIndex
                     val state    = downloadStates[idx]
+                    val serverUrl = when (model.backend) {
+                        ModelBackend.LM_STUDIO -> lmStudioUrl
+                        ModelBackend.OLLAMA    -> "$ollamaUrl ($ollamaModel)"
+                        else                   -> null
+                    }
 
                     ModelCard(
                         model      = model,
                         isLocal    = isLocal,
                         isActive   = isActive,
                         dlState    = state,
-                        serverUrl  = if (model.backend == ModelBackend.LM_STUDIO) lmStudioUrl else null,
+                        serverUrl  = serverUrl,
                         onActivate = { onSelectModel(idx) },
                         onDownload = {
                             scope.launch {
@@ -860,7 +897,9 @@ private fun ModelCard(
                         style = MaterialTheme.typography.titleSmall)
                     val subtitle = when (model.backend) {
                         ModelBackend.LM_STUDIO ->
-                            "Server: ${serverUrl ?: "non configurato"} · max ${model.maxTokens} token"
+                            "LM Studio · ${serverUrl ?: "non configurato"} · max ${model.maxTokens} token"
+                        ModelBackend.OLLAMA ->
+                            "Ollama Termux · ${serverUrl ?: "non configurato"} · max ${model.maxTokens} token"
                         else ->
                             "${model.fileSizeMb} MB · max ${model.maxTokens} token · " +
                                 if (model.useGpu) "GPU" else "CPU"
@@ -904,7 +943,11 @@ private fun ModelCard(
                 isLocal -> {
                     if (!isActive) {
                         Button(onClick = onActivate, modifier = Modifier.fillMaxWidth()) {
-                            Text(if (model.backend == ModelBackend.LM_STUDIO) "Connetti" else "Usa questo modello")
+                            Text(when (model.backend) {
+                                ModelBackend.LM_STUDIO -> "Connetti LM Studio"
+                                ModelBackend.OLLAMA    -> "Connetti Ollama"
+                                else -> "Usa questo modello"
+                            })
                         }
                     }
                 }
@@ -1350,6 +1393,9 @@ fun SettingsScreen(
     serverPort: Int,
     lmStudioUrl: String,
     onLmStudioUrlChange: (String) -> Unit,
+    ollamaUrl: String,
+    ollamaModel: String,
+    onOllamaConfigChange: (String, String) -> Unit,
     onRequestShizuku: () -> Unit,
     onRequestStorage: () -> Unit,
     onRequestCamera: () -> Unit,
@@ -1357,8 +1403,9 @@ fun SettingsScreen(
     onRequestContacts: () -> Unit,
     onRequestAccessibility: () -> Unit,
 ) {
-    // Local editable state for LM Studio URL — committed on focus loss
-    var lmUrlInput by remember(lmStudioUrl) { mutableStateOf(lmStudioUrl) }
+    var lmUrlInput    by remember(lmStudioUrl) { mutableStateOf(lmStudioUrl) }
+    var ollamaUrlInput by remember(ollamaUrl)  { mutableStateOf(ollamaUrl) }
+    var ollamaMdlInput by remember(ollamaModel){ mutableStateOf(ollamaModel) }
 
     Column(Modifier.fillMaxSize()) {
         TopAppBar(
@@ -1401,6 +1448,51 @@ fun SettingsScreen(
                                 }
                             },
                         )
+                    }
+                }
+            }
+
+            // Ollama (Termux) Section
+            item {
+                SettingsSection(title = "Ollama — Termux (inferenza locale)") {
+                    Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                        Text(
+                            "Esegui modelli GGUF direttamente sul dispositivo con Termux + Ollama.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "Installa Termux dal F-Droid, poi esegui: pkg install ollama • ollama serve • ollama pull gemma4:2b-instruct-q4_0",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = ollamaUrlInput,
+                            onValueChange = { ollamaUrlInput = it },
+                            label = { Text("URL Ollama") },
+                            placeholder = { Text("http://localhost:11434") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        OutlinedTextField(
+                            value = ollamaMdlInput,
+                            onValueChange = { ollamaMdlInput = it },
+                            label = { Text("Nome modello") },
+                            placeholder = { Text("gemma4:2b-instruct-q4_0") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        val ollamaChanged = ollamaUrlInput != ollamaUrl || ollamaMdlInput != ollamaModel
+                        if (ollamaChanged) {
+                            Button(
+                                onClick = { onOllamaConfigChange(ollamaUrlInput.trim(), ollamaMdlInput.trim()) },
+                                modifier = Modifier.fillMaxWidth()
+                            ) { Text("Salva configurazione Ollama") }
+                        }
                     }
                 }
             }
@@ -1477,10 +1569,12 @@ fun SettingsScreen(
                     SettingsInfoRow(Icons.Outlined.SmartToy, "Modello", activeModel.name)
                     SettingsInfoRow(Icons.Outlined.Info, "Formato", when (activeModel.backend) {
                         ModelBackend.LM_STUDIO -> "LM Studio (OpenAI-compatible)"
+                        ModelBackend.OLLAMA    -> "Ollama (OpenAI-compatible)"
                         else -> if (activeModel.filename.endsWith(".litertlm")) "LiteRT-LM" else "MediaPipe"
                     })
                     SettingsInfoRow(Icons.Outlined.Info, "Backend", when (activeModel.backend) {
-                        ModelBackend.LM_STUDIO -> "Server remoto (PC)"
+                        ModelBackend.LM_STUDIO -> "Server remoto (PC) — $lmStudioUrl"
+                        ModelBackend.OLLAMA    -> "Ollama Termux (locale) — $ollamaUrl"
                         else -> if (activeModel.useGpu) "GPU (fallback CPU)" else "CPU"
                     })
                 }

@@ -275,6 +275,15 @@ class AgentOrchestrator @Inject constructor(
     private suspend fun loadModel(modelPath: String, useGpu: Boolean) = withContext(Dispatchers.IO) {
         try {
             val newEngine = when {
+                modelPath.startsWith("ollama://") -> {
+                    // Ollama (Termux) — modelli GGUF in locale, API OpenAI-compatibile
+                    // Formato: ollama://<serverUrl>|<modelName>
+                    val withoutPrefix = modelPath.removePrefix("ollama://")
+                    val pipeIdx = withoutPrefix.indexOf('|')
+                    val serverUrl = if (pipeIdx >= 0) withoutPrefix.substring(0, pipeIdx) else withoutPrefix
+                    val modelName  = if (pipeIdx >= 0) withoutPrefix.substring(pipeIdx + 1) else ""
+                    com.example.agent.core.LmStudioLlmInference(serverUrl, modelName)
+                }
                 modelPath.startsWith("lmstudio://") -> {
                     // LM Studio locale — modelli GGUF sul PC, API OpenAI-compatibile
                     val serverUrl = modelPath.removePrefix("lmstudio://")
