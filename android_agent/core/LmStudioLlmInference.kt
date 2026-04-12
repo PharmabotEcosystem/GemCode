@@ -23,18 +23,20 @@ import java.net.URL
 class LmStudioLlmInference(
     private val serverUrl: String,
     private val modelName: String = "",
+    private val connectTimeoutMs: Int = 10_000,
+    private val readTimeoutMs: Int = 180_000,
 ) : LlmInferenceWrapper {
 
     override suspend fun generateResponse(prompt: String): String = withContext(Dispatchers.IO) {
+        val connection = (URL("$serverUrl/v1/chat/completions").openConnection() as HttpURLConnection)
+            .also { conn ->
+                conn.requestMethod = "POST"
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.doOutput = true
+                conn.connectTimeout = connectTimeoutMs
+                conn.readTimeout    = readTimeoutMs
+            }
         try {
-            val url = URL("$serverUrl/v1/chat/completions")
-            val connection = url.openConnection() as HttpURLConnection
-            connection.requestMethod = "POST"
-            connection.setRequestProperty("Content-Type", "application/json")
-            connection.doOutput = true
-            connection.connectTimeout = 10_000
-            connection.readTimeout   = 180_000
-
             val messages = JSONArray().put(
                 JSONObject().put("role", "user").put("content", prompt)
             )
@@ -46,11 +48,16 @@ class LmStudioLlmInference(
                 put("stream", false)
             }
 
-            OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use {
-                it.write(body.toString())
+            // Flush without closing so we can read the response code even if the
+            // server sends an early error and closes the connection (broken pipe on
+            // close() would otherwise swallow the HTTP status).
+            connection.outputStream.bufferedWriter(Charsets.UTF_8).apply {
+                write(body.toString())
+                flush()
             }
 
-            if (connection.responseCode == HttpURLConnection.HTTP_OK) {
+            val code = connection.responseCode
+            if (code == HttpURLConnection.HTTP_OK) {
                 val resp = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
                 JSONObject(resp)
                     .getJSONArray("choices")
@@ -60,18 +67,38 @@ class LmStudioLlmInference(
                     .trim()
             } else {
                 val err = connection.errorStream?.bufferedReader()?.use { it.readText() }
-                Log.e(TAG, "LM Studio HTTP ${connection.responseCode}: $err")
-                "Errore: LM Studio ha risposto con HTTP ${connection.responseCode}. " +
+                Log.e(TAG, "LM Studio HTTP $code: $err")
+                "Errore: LM Studio ha risposto con HTTP $code. " +
                         "Assicurati che il server sia avviato e abbia un modello caricato."
             }
+        } catch (e: java.io.IOException) {
+            // Broken pipe / early close: server sent an error status before we could finish
+            // writing the request body. Try to recover the HTTP status from the response.
+            val code = runCatching { connection.responseCode }.getOrNull()
+            if (code != null && code != HttpURLConnection.HTTP_OK) {
+                Log.e(TAG, "LM Studio HTTP $code (recovered from IOException)")
+                "Errore: LM Studio ha risposto con HTTP $code. " +
+                        "Assicurati che il server sia avviato e abbia un modello caricato."
+            } else {
+                Log.e(TAG, "LM Studio IO error: ${e.message}", e)
+                "Errore: impossibile raggiungere LM Studio su $serverUrl — ${e.message}\n" +
+                        "Verifica che:\n" +
+                        "• LM Studio sia aperto e un modello sia caricato\n" +
+                        "• Il server locale sia attivo (pulsante ▶ in LM Studio)\n" +
+                        "• Il dispositivo Android sia sulla stessa rete WiFi del PC\n" +
+                        "• L'indirizzo IP del PC sia corretto nell'app"
+            }
         } catch (e: Exception) {
-            Log.e(TAG, "LM Studio connection error: ${e.message}", e)
+            // Non-network errors (JSON parsing, unexpected runtime exceptions, etc.)
+            Log.e(TAG, "LM Studio error: ${e.message}", e)
             "Errore: impossibile raggiungere LM Studio su $serverUrl — ${e.message}\n" +
                     "Verifica che:\n" +
                     "• LM Studio sia aperto e un modello sia caricato\n" +
                     "• Il server locale sia attivo (pulsante ▶ in LM Studio)\n" +
                     "• Il dispositivo Android sia sulla stessa rete WiFi del PC\n" +
                     "• L'indirizzo IP del PC sia corretto nell'app"
+        } finally {
+            connection.disconnect()
         }
     }
 

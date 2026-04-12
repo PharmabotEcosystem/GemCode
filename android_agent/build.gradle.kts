@@ -211,4 +211,10 @@ dependencies {
     // 1.14.9: first series with Kotlin 2.1+/2.2+ support (1.13.13 was Kotlin 2.0.0 only)
     testImplementation("io.mockk:mockk:1.14.9")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:$coroutinesVersion")
+    // MockWebServer: real local HTTP server for testing LmStudioLlmInference without mocking
+    // java.net.HttpURLConnection — same version as the okhttp3 production dep
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
+    // Real org.json to override the Android stub (isReturnDefaultValues stubs return null for
+    // JSONObject.put(), which breaks chained calls in unit tests)
+    testImplementation("org.json:json:20231013")
 }

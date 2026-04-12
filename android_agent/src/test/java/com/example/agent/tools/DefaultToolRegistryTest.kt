@@ -1,6 +1,6 @@
 package com.example.agent.tools
 
-import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -14,7 +14,7 @@ class DefaultToolRegistryTest {
         override val name = name
         override val description = description
         override val parametersSchema = "{}"
-        override suspend fun execute(params: JsonElement) = "result-$name"
+        override suspend fun execute(params: JsonObject) = "result-$name"
     }
 
     // ─────────────────────────────────────────────────────────────────────────
