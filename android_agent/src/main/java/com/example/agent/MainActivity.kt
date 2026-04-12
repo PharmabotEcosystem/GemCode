@@ -84,6 +84,8 @@ enum class Screen { CHAT, MODELS, SETTINGS }
 
 // ─── Data models ──────────────────────────────────────────────────────────────
 
+data class ChatEntry(val role: String, val content: String)
+
 data class GemmaModel(
     val name: String,
     val url: String,
@@ -172,7 +174,6 @@ class MainActivity : ComponentActivity(), Shizuku.OnRequestPermissionResultListe
 
     override fun onDestroy() {
         super.onDestroy()
-        inferenceServer?.stop()
         Shizuku.removeRequestPermissionResultListener(this)
         Shizuku.removeBinderReceivedListener(binderReceived)
         Shizuku.removeBinderDeadListener(binderDead)
@@ -255,7 +256,7 @@ fun GemcodeApp(
 ) {
     var screen by remember { mutableStateOf(Screen.CHAT) }
     val activeModel = AVAILABLE_MODELS[modelIndex]
-    val isBusy = agentState.isBusy
+    val isBusy = agentState is AgentState.Reasoning || agentState is AgentState.ExecutingTool
 
     Scaffold(
         contentWindowInsets = WindowInsets.safeDrawing,

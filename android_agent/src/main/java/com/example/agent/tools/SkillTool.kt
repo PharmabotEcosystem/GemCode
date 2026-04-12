@@ -19,14 +19,14 @@ class SkillTool(private val skillManager: SkillManager) : Tool {
         }
     """.trimIndent()
 
-    override suspend fun execute(params: JsonElement): String {
-        val action = params.jsonObject["action"]?.jsonPrimitive?.content ?: return "Error: Missing action"
+    override suspend fun execute(params: JsonObject): String {
+        val action = params["action"]?.jsonPrimitive?.content ?: return "Error: Missing action"
         
         return when (action) {
             "save_skill" -> {
-                val name = params.jsonObject["skill_name"]?.jsonPrimitive?.content ?: return "Error: Missing skill_name"
-                val desc = params.jsonObject["skill_description"]?.jsonPrimitive?.content ?: return "Error: Missing skill_description"
-                val inst = params.jsonObject["instructions"]?.jsonPrimitive?.content ?: return "Error: Missing instructions"
+                val name = params["skill_name"]?.jsonPrimitive?.content ?: return "Error: Missing skill_name"
+                val desc = params["skill_description"]?.jsonPrimitive?.content ?: return "Error: Missing skill_description"
+                val inst = params["instructions"]?.jsonPrimitive?.content ?: return "Error: Missing instructions"
                 skillManager.saveSkill(name, desc, inst)
             }
             "list_skills" -> {
@@ -35,7 +35,7 @@ class SkillTool(private val skillManager: SkillManager) : Tool {
                 else "Available skills: " + skills.keys.joinToString(", ")
             }
             "use_skill" -> {
-                val name = params.jsonObject["skill_name"]?.jsonPrimitive?.content ?: return "Error: Missing skill_name"
+                val name = params["skill_name"]?.jsonPrimitive?.content ?: return "Error: Missing skill_name"
                 skillManager.getSkillInstructions(name) ?: "Error: Skill '$name' not found."
             }
             else -> "Error: Unknown action '$action'"

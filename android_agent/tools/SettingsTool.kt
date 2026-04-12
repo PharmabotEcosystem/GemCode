@@ -1,9 +1,10 @@
 package com.example.agent.tools
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import rikka.shizuku.Shizuku
 import java.io.BufferedReader
@@ -28,10 +29,10 @@ class SettingsTool : Tool {
         }
     """.trimIndent()
 
-    override suspend fun execute(params: JsonElement): String = withContext(Dispatchers.IO) {
-        val namespace = params.jsonObject["namespace"]?.jsonPrimitive?.content ?: return@withContext "Error: namespace required."
-        val key = params.jsonObject["key"]?.jsonPrimitive?.content ?: return@withContext "Error: key required."
-        val value = params.jsonObject["value"]?.jsonPrimitive?.content ?: return@withContext "Error: value required."
+    override suspend fun execute(params: JsonObject): String = withContext(Dispatchers.IO) {
+        val namespace = params["namespace"]?.jsonPrimitive?.content ?: return@withContext "Error: namespace required."
+        val key = params["key"]?.jsonPrimitive?.content ?: return@withContext "Error: key required."
+        val value = params["value"]?.jsonPrimitive?.content ?: return@withContext "Error: value required."
 
         if (!Shizuku.pingBinder()) {
             return@withContext "Error: Shizuku is not running or not accessible."
@@ -44,20 +45,27 @@ class SettingsTool : Tool {
         val command = "settings put $namespace $key $value"
 
         return@withContext try {
-            // Esegue il comando tramite Shizuku
             val process = Shizuku.newProcess(arrayOf("sh", "-c", command), null, null)
-            val reader = BufferedReader(InputStreamReader(process.inputStream))
-            val errorReader = BufferedReader(InputStreamReader(process.errorStream))
-            
-            process.waitFor()
-            
-            val output = reader.readText()
-            val error = errorReader.readText()
 
-            if (process.exitValue() == 0) {
-                "Success: Setting updated. Output: $output"
+            // Drain stdout and stderr in parallel to prevent deadlock.
+            // If we read one stream only after waitFor(), the other stream buffer
+            // may fill up and block the child process, causing a deadlock.
+            val (output, error) = coroutineScope {
+                val stdout = async(Dispatchers.IO) {
+                    BufferedReader(InputStreamReader(process.inputStream)).readText()
+                }
+                val stderr = async(Dispatchers.IO) {
+                    BufferedReader(InputStreamReader(process.errorStream)).readText()
+                }
+                Pair(stdout.await(), stderr.await())
+            }
+
+            val exitCode = process.waitFor()
+            if (exitCode == 0) {
+                "Success: Setting '$namespace/$key' set to '$value'." +
+                        if (output.isNotBlank()) " Output: $output" else ""
             } else {
-                "Error executing command: $error"
+                "Error (exit $exitCode): $error"
             }
         } catch (e: Exception) {
             "Exception: ${e.message}"

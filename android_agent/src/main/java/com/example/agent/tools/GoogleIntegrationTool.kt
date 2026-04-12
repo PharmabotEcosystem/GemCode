@@ -49,15 +49,15 @@ class GoogleIntegrationTool(private val context: Context) : Tool {
         return null
     }
 
-    override suspend fun execute(params: JsonElement): String {
-        val action = params.jsonObject["action"]?.jsonPrimitive?.content ?: return "Error: Missing action"
+    override suspend fun execute(params: JsonObject): String {
+        val action = params["action"]?.jsonPrimitive?.content ?: return "Error: Missing action"
         
         return try {
             when (action) {
                 "send_email" -> {
-                    val to = params.jsonObject["to"]?.jsonPrimitive?.content ?: ""
-                    val subject = params.jsonObject["subject"]?.jsonPrimitive?.content ?: ""
-                    val body = params.jsonObject["body"]?.jsonPrimitive?.content ?: ""
+                    val to = params["to"]?.jsonPrimitive?.content ?: ""
+                    val subject = params["subject"]?.jsonPrimitive?.content ?: ""
+                    val body = params["body"]?.jsonPrimitive?.content ?: ""
                     
                     val intent = Intent(Intent.ACTION_SENDTO).apply {
                         data = Uri.parse("mailto:")
@@ -70,12 +70,12 @@ class GoogleIntegrationTool(private val context: Context) : Tool {
                     "Email intent launched successfully."
                 }
                 "create_event" -> {
-                    val title = params.jsonObject["title"]?.jsonPrimitive?.content ?: ""
-                    val description = params.jsonObject["description"]?.jsonPrimitive?.content ?: ""
-                    val location = params.jsonObject["location"]?.jsonPrimitive?.content ?: ""
-                    val startDateStr = params.jsonObject["start_date"]?.jsonPrimitive?.content
-                    val endDateStr = params.jsonObject["end_date"]?.jsonPrimitive?.content
-                    val timezone = params.jsonObject["timezone"]?.jsonPrimitive?.content
+                    val title = params["title"]?.jsonPrimitive?.content ?: ""
+                    val description = params["description"]?.jsonPrimitive?.content ?: ""
+                    val location = params["location"]?.jsonPrimitive?.content ?: ""
+                    val startDateStr = params["start_date"]?.jsonPrimitive?.content
+                    val endDateStr = params["end_date"]?.jsonPrimitive?.content
+                    val timezone = params["timezone"]?.jsonPrimitive?.content
                     
                     val intent = Intent(Intent.ACTION_INSERT).apply {
                         data = CalendarContract.Events.CONTENT_URI

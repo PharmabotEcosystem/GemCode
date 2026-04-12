@@ -8,6 +8,7 @@ import com.example.agent.tools.FileSystemTool
 import com.example.agent.tools.GoogleIntegrationTool
 import com.example.agent.tools.MCPTool
 import com.example.agent.tools.SettingsTool
+import com.example.agent.tools.ShellTool
 import com.example.agent.tools.SkillTool
 import com.example.agent.tools.Tool
 import com.example.agent.tools.ToolRegistry
@@ -142,21 +143,14 @@ abstract class ToolsModule {
         /**
          * Tool per esecuzione shell privilegiata tramite [ShizukuCommandExecutor].
          *
-         * Questo è il tool "generico" per comandi shell; `SettingsTool` rimane
-         * specializzato per `settings put/get`.
-         *
-         * Per aggiungere questo tool a Hilt, decommenta e crea `ShellTool`:
-         * ```kotlin
-         * @Provides @Singleton @IntoSet
-         * fun provideShellTool(executor: ShizukuCommandExecutor): Tool =
-         *     ShellTool(executor)
-         * ```
-         *
-         * Placeholder: il tool verrà aggiunto quando `ShellTool` sarà implementato.
-         * Lasciamo il provider commentato per non rompere il multibinding con null.
+         * Fornisce all'agente accesso generico a comandi ADB-level: am, pm,
+         * dumpsys, input, getprop, df, ps, ecc. Richiede Shizuku attivo.
+         * Il SafetyGuard filtra i comandi pericolosi prima dell'esecuzione.
          */
-        // @Provides @Singleton @IntoSet
-        // fun provideShellTool(executor: ShizukuCommandExecutor): Tool = ShellTool(executor)
+        @Provides
+        @Singleton
+        @IntoSet
+        fun provideShellTool(executor: ShizukuCommandExecutor): Tool = ShellTool(executor)
 
         /**
          * Se in futuro nessun tool fosse disponibile (tutti commentati durante sviluppo),

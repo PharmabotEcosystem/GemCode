@@ -23,14 +23,14 @@ class MCPTool : Tool {
         }
     """.trimIndent()
 
-    override suspend fun execute(params: JsonElement): String = withContext(Dispatchers.IO) {
-        val action = params.jsonObject["action"]?.jsonPrimitive?.content ?: return@withContext "Error: Missing action"
+    override suspend fun execute(params: JsonObject): String = withContext(Dispatchers.IO) {
+        val action = params["action"]?.jsonPrimitive?.content ?: return@withContext "Error: Missing action"
         
         if (action != "call_mcp") return@withContext "Error: Unknown action '${action}'"
         
-        val urlStr = params.jsonObject["url"]?.jsonPrimitive?.content ?: return@withContext "Error: Missing url"
-        val method = params.jsonObject["method"]?.jsonPrimitive?.content ?: return@withContext "Error: Missing method"
-        val paramsJsonStr = params.jsonObject["params_json"]?.jsonPrimitive?.content ?: "{}"
+        val urlStr = params["url"]?.jsonPrimitive?.content ?: return@withContext "Error: Missing url"
+        val method = params["method"]?.jsonPrimitive?.content ?: return@withContext "Error: Missing method"
+        val paramsJsonStr = params["params_json"]?.jsonPrimitive?.content ?: "{}"
         
         try {
             val url = URL(urlStr)
