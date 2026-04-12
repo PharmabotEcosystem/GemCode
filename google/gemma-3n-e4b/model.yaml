@@ -1,0 +1,100 @@
+# model.yaml is an open standard for defining cross-platform, composable AI models
+# Learn more at https://modelyaml.org
+model: google/gemma-3n-e4b
+base:
+  - key: lmstudio-community/gemma-3n-e4b-it-text-gguf
+    sources:
+      - type: huggingface
+        user: lmstudio-community
+        repo: gemma-3n-E4B-it-text-GGUF
+  - key: lmstudio-community/gemma-3n-e4b-it-mlx-4bit
+    sources:
+      - type: huggingface
+        user: lmstudio-community
+        repo: gemma-3n-E4B-it-MLX-4bit
+  - key: lmstudio-community/gemma-3n-e4b-it-mlx-6bit
+    sources:
+      - type: huggingface
+        user: lmstudio-community
+        repo: gemma-3n-E4B-it-MLX-6bit
+  - key: lmstudio-community/gemma-3n-e4b-it-mlx-8bit
+    sources:
+      - type: huggingface
+        user: lmstudio-community
+        repo: gemma-3n-E4B-it-MLX-8bit
+  - key: lmstudio-community/gemma-3n-e4b-it-mlx-bf16
+    sources:
+      - type: huggingface
+        user: lmstudio-community
+        repo: gemma-3n-E4B-it-MLX-bf16
+config:
+  operation:
+    fields:
+      - key: llm.prediction.promptTemplate
+        value:
+          type: jinja
+          jinjaPromptTemplate:
+            template: |
+              {{ bos_token }}
+              {%- if messages[0]['role'] == 'system' -%}
+                  {%- if messages[0]['content'] is string -%}
+                      {%- set first_user_prefix = messages[0]['content'] + '
+
+              ' -%}
+                  {%- else -%}
+                      {%- set first_user_prefix = messages[0]['content'][0]['text'] + '
+
+              ' -%}
+                  {%- endif -%}
+                  {%- set loop_messages = messages[1:] -%}
+              {%- else -%}
+                  {%- set first_user_prefix = "" -%}
+                  {%- set loop_messages = messages -%}
+              {%- endif -%}
+              {%- for message in loop_messages -%}
+                  {%- if (message['role'] == 'user') != (loop.index0 % 2 == 0) -%}
+                      {{ raise_exception("Conversation roles must alternate user/assistant/user/assistant/...") }}
+                  {%- endif -%}
+                  {%- if (message['role'] == 'assistant') -%}
+                      {%- set role = "model" -%}
+                  {%- else -%}
+                      {%- set role = message['role'] -%}
+                  {%- endif -%}
+                  {{ '<start_of_turn>' + role + '
+              ' + (first_user_prefix if loop.first else "") }}
+                  {%- if message['content'] is string -%}
+                      {{ message['content'] }}
+                  {%- elif message['content'] is iterable -%}
+                      {%- for item in message['content'] -%}
+                          {%- if item['type'] == 'audio' -%}
+                              {{ '<audio_soft_token>' }}
+                          {%- elif item['type'] == 'image' -%}
+                              {{ '<image_soft_token>' }}
+                          {%- elif item['type'] == 'text' -%}
+                              {{ item['text'] }}
+                          {%- endif -%}
+                      {%- endfor -%}
+                  {%- else -%}
+                      {{ raise_exception("Invalid content type") }}
+                  {%- endif -%}
+                  {{ '<end_of_turn>
+              ' }}
+              {%- endfor -%}
+              {%- if add_generation_prompt -%}
+                  {{'<start_of_turn>model
+              '}}
+              {%- endif -%}
+          stopStrings: []
+metadataOverrides:
+  domain: llm
+  architectures:
+    - gemma3n
+  compatibilityTypes:
+    - gguf
+    - safetensors
+  paramsStrings:
+    - 6.9B
+  minMemoryUsageBytes: 4240000000
+  contextLengths:
+    - 32768
+  vision: mixed

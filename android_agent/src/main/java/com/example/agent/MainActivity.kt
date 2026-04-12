@@ -107,17 +107,22 @@ enum class Screen { CHAT, MODELS, SKILLS, PLUGINS, SETTINGS }
 
 data class ChatEntry(val role: String, val content: String)
 
+enum class ModelBackend { LITERT, MEDIAPIPE, LM_STUDIO }
+
 data class GemmaModel(
     val name: String,
-    val url: String,
-    val filename: String,
+    val url: String = "",
+    val filename: String = "",
     val useGpu: Boolean = false,
-    val maxTokens: Int = 1024,
+    val maxTokens: Int = 8192,
     val fileSizeMb: Int = 0,
+    val backend: ModelBackend = ModelBackend.LITERT,
 )
 
 val AVAILABLE_MODELS = listOf(
-    // Gemma 4 — LiteRT-LM (.litertlm)
+    // LM Studio — server OpenAI-compatibile sul PC (modelli GGUF, nessun download sul device)
+    GemmaModel("LM Studio (PC locale)", backend = ModelBackend.LM_STUDIO, maxTokens = 32768),
+    // Gemma 4 — LiteRT-LM (.litertlm) — richiede download sul dispositivo
     GemmaModel("Gemma 4 E2B (CPU)", "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm?download=true", "gemma4_e2b_cpu.litertlm", useGpu = false, maxTokens = 8192, fileSizeMb = 2580),
     GemmaModel("Gemma 4 E2B (GPU)", "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm?download=true", "gemma4_e2b_gpu.litertlm", useGpu = true,  maxTokens = 8192, fileSizeMb = 2580),
     GemmaModel("Gemma 4 E4B (CPU)", "https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it.litertlm?download=true", "gemma4_e4b_cpu.litertlm", useGpu = false, maxTokens = 8192, fileSizeMb = 3650),
@@ -166,6 +171,7 @@ class MainActivity : ComponentActivity(), Shizuku.OnRequestPermissionResultListe
 
     // ── Compose state ─────────────────────────────────────────────────────────
     private var modelIndex       by mutableStateOf(0)
+    private var lmStudioUrl      by mutableStateOf("http://192.168.1.100:1234")
     private var shizukuState     by mutableStateOf(ShizukuState.UNAVAILABLE)
     private var hasStorage       by mutableStateOf(false)
     private var hasCamera        by mutableStateOf(false)
@@ -185,7 +191,8 @@ class MainActivity : ComponentActivity(), Shizuku.OnRequestPermissionResultListe
         enableEdgeToEdge()
 
         val prefs = getSharedPreferences("gemcode", Context.MODE_PRIVATE)
-        modelIndex = (prefs.getInt("modelIndex", 0)).coerceIn(0, AVAILABLE_MODELS.lastIndex)
+        modelIndex   = (prefs.getInt("modelIndex", 0)).coerceIn(0, AVAILABLE_MODELS.lastIndex)
+        lmStudioUrl  = prefs.getString("lmStudioUrl", "http://192.168.1.100:1234") ?: "http://192.168.1.100:1234"
         shizukuState = runCatching { ShizukuState.valueOf(prefs.getString("shizuku", "") ?: "") }
             .getOrDefault(ShizukuState.UNAVAILABLE)
         hasStorage       = checkStorage()
@@ -201,11 +208,17 @@ class MainActivity : ComponentActivity(), Shizuku.OnRequestPermissionResultListe
             if (result[Manifest.permission.READ_CONTACTS] == true) hasContacts = true
         }
 
-        // Auto-initialize selected model if it exists
+        // Auto-initialize selected model
         val currentModel = AVAILABLE_MODELS[modelIndex]
-        val modelFile = File(filesDir, currentModel.filename)
-        if (modelFile.exists()) {
-            viewModel.initializeModel(modelFile.absolutePath, currentModel.useGpu)
+        when (currentModel.backend) {
+            ModelBackend.LM_STUDIO ->
+                viewModel.initializeModel("lmstudio://$lmStudioUrl", false)
+            else -> {
+                val modelFile = File(filesDir, currentModel.filename)
+                if (modelFile.exists()) {
+                    viewModel.initializeModel(modelFile.absolutePath, currentModel.useGpu)
+                }
+            }
         }
 
         Shizuku.addRequestPermissionResultListener(this)
@@ -222,6 +235,7 @@ class MainActivity : ComponentActivity(), Shizuku.OnRequestPermissionResultListe
                     messages          = history.map { ChatEntry(it.role.name, it.content) },
                     agentState        = agentState,
                     modelIndex        = modelIndex,
+                    lmStudioUrl       = lmStudioUrl,
                     shizukuState      = shizukuState,
                     hasStorage        = hasStorage,
                     hasCamera         = hasCamera,
@@ -231,6 +245,7 @@ class MainActivity : ComponentActivity(), Shizuku.OnRequestPermissionResultListe
                     mcpServers        = mcpServers,
                     onSend            = { prompt -> viewModel.sendPrompt(prompt) },
                     onSelectModel     = { idx -> selectModel(idx) },
+                    onLmStudioUrlChange = { url -> saveLmStudioUrl(url) },
                     onRequestShizuku     = { runCatching { Shizuku.requestPermission(100) } },
                     onRequestStorage     = { requestStorage() },
                     onRequestCamera      = { permissionLauncher.launch(arrayOf(Manifest.permission.CAMERA)) },
@@ -297,11 +312,25 @@ class MainActivity : ComponentActivity(), Shizuku.OnRequestPermissionResultListe
         modelIndex = idx
         getSharedPreferences("gemcode", Context.MODE_PRIVATE)
             .edit().putInt("modelIndex", idx).apply()
-        
         val model = AVAILABLE_MODELS[idx]
-        val file = File(filesDir, model.filename)
-        if (file.exists()) {
-            viewModel.initializeModel(file.absolutePath, model.useGpu)
+        when (model.backend) {
+            ModelBackend.LM_STUDIO ->
+                viewModel.initializeModel("lmstudio://$lmStudioUrl", false)
+            else -> {
+                val file = File(filesDir, model.filename)
+                if (file.exists()) {
+                    viewModel.initializeModel(file.absolutePath, model.useGpu)
+                }
+            }
+        }
+    }
+
+    private fun saveLmStudioUrl(url: String) {
+        lmStudioUrl = url
+        getSharedPreferences("gemcode", Context.MODE_PRIVATE)
+            .edit().putString("lmStudioUrl", url).apply()
+        if (AVAILABLE_MODELS[modelIndex].backend == ModelBackend.LM_STUDIO) {
+            viewModel.initializeModel("lmstudio://$url", false)
         }
     }
 
@@ -372,6 +401,7 @@ fun GemcodeApp(
     messages: List<ChatEntry>,
     agentState: AgentState,
     modelIndex: Int,
+    lmStudioUrl: String,
     shizukuState: ShizukuState,
     hasStorage: Boolean,
     hasCamera: Boolean,
@@ -381,6 +411,7 @@ fun GemcodeApp(
     mcpServers: List<McpServer>,
     onSend: (String) -> Unit,
     onSelectModel: (Int) -> Unit,
+    onLmStudioUrlChange: (String) -> Unit,
     onRequestShizuku: () -> Unit,
     onRequestStorage: () -> Unit,
     onRequestCamera: () -> Unit,
@@ -422,6 +453,7 @@ fun GemcodeApp(
                 )
                 Screen.MODELS  -> ModelsScreen(
                     modelIndex    = modelIndex,
+                    lmStudioUrl   = lmStudioUrl,
                     onSelectModel = onSelectModel,
                 )
                 Screen.SKILLS  -> SkillsScreen(
@@ -445,6 +477,8 @@ fun GemcodeApp(
                     hasAccessibility      = hasAccessibility,
                     activeModel           = activeModel,
                     serverPort            = InferenceHttpServer.DEFAULT_PORT,
+                    lmStudioUrl           = lmStudioUrl,
+                    onLmStudioUrlChange   = onLmStudioUrlChange,
                     onRequestShizuku      = onRequestShizuku,
                     onRequestStorage      = onRequestStorage,
                     onRequestCamera       = onRequestCamera,
@@ -750,7 +784,7 @@ private fun TypingIndicator() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ModelsScreen(modelIndex: Int, onSelectModel: (Int) -> Unit) {
+fun ModelsScreen(modelIndex: Int, lmStudioUrl: String, onSelectModel: (Int) -> Unit) {
     val context = LocalContext.current
     val scope   = rememberCoroutineScope()
     val downloadStates = remember { mutableStateMapOf<Int, DownloadState>() }
@@ -768,19 +802,22 @@ fun ModelsScreen(modelIndex: Int, onSelectModel: (Int) -> Unit) {
         ) {
             AVAILABLE_MODELS.forEachIndexed { idx, model ->
                 item(key = idx) {
-                    val file     = File(context.filesDir, model.filename)
-                    val isLocal  = remember(downloadStates[idx]) { file.exists() }
+                    // LM Studio è sempre disponibile (nessun file da scaricare)
+                    val isLocal  = if (model.backend == ModelBackend.LM_STUDIO) true
+                                   else remember(downloadStates[idx]) { File(context.filesDir, model.filename).exists() }
                     val isActive = idx == modelIndex
                     val state    = downloadStates[idx]
 
                     ModelCard(
-                        model    = model,
-                        isLocal  = isLocal,
-                        isActive = isActive,
-                        dlState  = state,
+                        model      = model,
+                        isLocal    = isLocal,
+                        isActive   = isActive,
+                        dlState    = state,
+                        serverUrl  = if (model.backend == ModelBackend.LM_STUDIO) lmStudioUrl else null,
                         onActivate = { onSelectModel(idx) },
                         onDownload = {
                             scope.launch {
+                                val file = File(context.filesDir, model.filename)
                                 ModelDownloader.downloadModel(model.url, file).collectLatest { s ->
                                     downloadStates[idx] = s
                                     if (s is DownloadState.Success) onSelectModel(idx)
@@ -800,6 +837,7 @@ private fun ModelCard(
     isLocal: Boolean,
     isActive: Boolean,
     dlState: DownloadState?,
+    serverUrl: String?,
     onActivate: () -> Unit,
     onDownload: () -> Unit,
 ) {
@@ -820,8 +858,14 @@ private fun ModelCard(
                 Column(Modifier.weight(1f)) {
                     Text(model.name, fontWeight = FontWeight.SemiBold,
                         style = MaterialTheme.typography.titleSmall)
-                    Text("${model.fileSizeMb} MB · max ${model.maxTokens} token · " +
-                            if (model.useGpu) "GPU" else "CPU",
+                    val subtitle = when (model.backend) {
+                        ModelBackend.LM_STUDIO ->
+                            "Server: ${serverUrl ?: "non configurato"} · max ${model.maxTokens} token"
+                        else ->
+                            "${model.fileSizeMb} MB · max ${model.maxTokens} token · " +
+                                if (model.useGpu) "GPU" else "CPU"
+                    }
+                    Text(subtitle,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -860,7 +904,7 @@ private fun ModelCard(
                 isLocal -> {
                     if (!isActive) {
                         Button(onClick = onActivate, modifier = Modifier.fillMaxWidth()) {
-                            Text("Usa questo modello")
+                            Text(if (model.backend == ModelBackend.LM_STUDIO) "Connetti" else "Usa questo modello")
                         }
                     }
                 }
@@ -1304,6 +1348,8 @@ fun SettingsScreen(
     hasAccessibility: Boolean,
     activeModel: GemmaModel,
     serverPort: Int,
+    lmStudioUrl: String,
+    onLmStudioUrlChange: (String) -> Unit,
     onRequestShizuku: () -> Unit,
     onRequestStorage: () -> Unit,
     onRequestCamera: () -> Unit,
@@ -1311,6 +1357,9 @@ fun SettingsScreen(
     onRequestContacts: () -> Unit,
     onRequestAccessibility: () -> Unit,
 ) {
+    // Local editable state for LM Studio URL — committed on focus loss
+    var lmUrlInput by remember(lmStudioUrl) { mutableStateOf(lmStudioUrl) }
+
     Column(Modifier.fillMaxSize()) {
         TopAppBar(
             title = { Text("Impostazioni", fontWeight = FontWeight.SemiBold) },
@@ -1319,6 +1368,42 @@ fun SettingsScreen(
         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
 
         LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+
+            // LM Studio Server
+            item {
+                SettingsSection(title = "LM Studio (server locale)") {
+                    Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                        Text(
+                            "Indirizzo IP del PC dove gira LM Studio",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "Il dispositivo Android e il PC devono essere sulla stessa rete WiFi. " +
+                            "In LM Studio: Server ▶ Avvia server locale.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = lmUrlInput,
+                            onValueChange = { lmUrlInput = it },
+                            label = { Text("URL server") },
+                            placeholder = { Text("http://192.168.1.100:1234") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                            trailingIcon = {
+                                if (lmUrlInput != lmStudioUrl) {
+                                    TextButton(onClick = { onLmStudioUrlChange(lmUrlInput.trim()) }) {
+                                        Text("Salva")
+                                    }
+                                }
+                            },
+                        )
+                    }
+                }
+            }
 
             // Server HTTP
             item {
@@ -1390,10 +1475,14 @@ fun SettingsScreen(
             item {
                 SettingsSection(title = "Modello attivo") {
                     SettingsInfoRow(Icons.Outlined.SmartToy, "Modello", activeModel.name)
-                    SettingsInfoRow(Icons.Outlined.Info, "Formato",
-                        if (activeModel.filename.endsWith(".litertlm")) "LiteRT-LM" else "MediaPipe")
-                    SettingsInfoRow(Icons.Outlined.Info, "Backend",
-                        if (activeModel.useGpu) "GPU (fallback CPU)" else "CPU")
+                    SettingsInfoRow(Icons.Outlined.Info, "Formato", when (activeModel.backend) {
+                        ModelBackend.LM_STUDIO -> "LM Studio (OpenAI-compatible)"
+                        else -> if (activeModel.filename.endsWith(".litertlm")) "LiteRT-LM" else "MediaPipe"
+                    })
+                    SettingsInfoRow(Icons.Outlined.Info, "Backend", when (activeModel.backend) {
+                        ModelBackend.LM_STUDIO -> "Server remoto (PC)"
+                        else -> if (activeModel.useGpu) "GPU (fallback CPU)" else "CPU"
+                    })
                 }
             }
 

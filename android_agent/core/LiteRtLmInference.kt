@@ -54,9 +54,14 @@ class LiteRtLmInference(
     init {
         val modelFile = File(modelPath)
         if (!modelFile.exists()) {
-            Log.w(TAG, "Model file not found: $modelPath")
-        } else {
-            initializeEngine()
+            throw IllegalStateException("Model file not found: $modelPath")
+        }
+        initializeEngine()
+        if (engine == null) {
+            throw IllegalStateException(
+                "LiteRT-LM engine failed to initialize for: ${modelFile.name}. " +
+                "The file may be corrupted or incompatible with litertlm-android:0.10.0."
+            )
         }
     }
 
@@ -66,19 +71,22 @@ class LiteRtLmInference(
             engine = buildEngine(backend)
             Log.i(TAG, "LiteRT-LM engine ready: ${File(modelPath).name} " +
                     "(backend=${backendLabel()}, temperature=$temperature)")
-        } catch (e: Exception) {
-            if (useGpu || useNpu) {
+        } catch (e: Throwable) {
+            val isHardwareBackend = useGpu || useNpu
+            if (isHardwareBackend) {
                 // Fallback a CPU se il backend accelerato non è disponibile sul dispositivo
                 Log.w(TAG, "${backendLabel()} init failed (${e.message}), falling back to CPU")
                 try {
                     engine = buildEngine(Backend.CPU())
                     Log.i(TAG, "LiteRT-LM CPU fallback ready: ${File(modelPath).name}")
-                } catch (cpuEx: Exception) {
-                    Log.e(TAG, "CPU fallback failed: ${cpuEx.message}")
+                    return
+                } catch (cpuEx: Throwable) {
+                    Log.e(TAG, "CPU fallback also failed: ${cpuEx.message}")
                 }
             } else {
                 Log.e(TAG, "Failed to initialize LiteRT-LM engine: ${e.message}")
             }
+            // engine stays null — constructor will throw IllegalStateException
         }
     }
 

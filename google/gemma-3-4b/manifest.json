@@ -1,0 +1,34 @@
+{
+  "type": "model",
+  "owner": "google",
+  "name": "gemma-3-4b",
+  "dependencies": [
+    {
+      "type": "model",
+      "purpose": "baseModel",
+      "modelKeys": [
+        "lmstudio-community/gemma-3-4b-it-gguf",
+        "lmstudio-community/gemma-3-4B-it-QAT-GGUF",
+        "mlx-community/gemma-3-4b-it-qat-4bit"
+      ],
+      "sources": [
+        {
+          "type": "huggingface",
+          "user": "lmstudio-community",
+          "repo": "gemma-3-4b-it-GGUF"
+        },
+        {
+          "type": "huggingface",
+          "user": "lmstudio-community",
+          "repo": "gemma-3-4B-it-QAT-GGUF"
+        },
+        {
+          "type": "huggingface",
+          "user": "mlx-community",
+          "repo": "gemma-3-4b-it-qat-4bit"
+        }
+      ]
+    }
+  ],
+  "revision": 4
+}

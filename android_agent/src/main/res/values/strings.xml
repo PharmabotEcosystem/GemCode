@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Autonomous Agent</string>
+    <string name="accessibility_service_description">Permette all\'agente AI di interagire con le altre app, eseguire gesti e leggere il contenuto dello schermo per completare i task assegnati.</string>
+</resources>

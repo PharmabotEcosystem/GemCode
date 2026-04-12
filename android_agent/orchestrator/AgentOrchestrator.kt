@@ -274,23 +274,28 @@ class AgentOrchestrator @Inject constructor(
 
     private suspend fun loadModel(modelPath: String, useGpu: Boolean) = withContext(Dispatchers.IO) {
         try {
-            val memCheck = resourceManager.canLoadModel(context, modelPath)
-            if (!memCheck.isAvailable) {
-                transition(AgentState.CriticalError(
-                    cause = OutOfMemoryError("Insufficient RAM for model"),
-                    message = memCheck.suggestion
-                ))
-                return@withContext
-            }
-
             val newEngine = when {
-                modelPath.endsWith(".litertlm", ignoreCase = true) -> {
-                    // Gemma 4 — LiteRT-LM
-                    com.example.agent.core.LiteRtLmInference(context, modelPath, useGpu = useGpu)
+                modelPath.startsWith("lmstudio://") -> {
+                    // LM Studio locale — modelli GGUF sul PC, API OpenAI-compatibile
+                    val serverUrl = modelPath.removePrefix("lmstudio://")
+                    com.example.agent.core.LmStudioLlmInference(serverUrl)
                 }
                 else -> {
-                    // Gemma 3/2B — MediaPipe Tasks
-                    MediaPipeLlmInference(context, modelPath, useGpu = useGpu)
+                    // Modelli locali sul dispositivo — richiede RAM disponibile
+                    val memCheck = resourceManager.canLoadModel(context, modelPath)
+                    if (!memCheck.isAvailable) {
+                        transition(AgentState.CriticalError(
+                            cause = OutOfMemoryError("Insufficient RAM for model"),
+                            message = memCheck.suggestion
+                        ))
+                        return@withContext
+                    }
+                    when {
+                        modelPath.endsWith(".litertlm", ignoreCase = true) ->
+                            com.example.agent.core.LiteRtLmInference(context, modelPath, useGpu = useGpu)
+                        else ->
+                            MediaPipeLlmInference(context, modelPath, useGpu = useGpu)
+                    }
                 }
             }
 
@@ -300,6 +305,14 @@ class AgentOrchestrator @Inject constructor(
         } catch (e: Exception) {
             Log.e(TAG, "Model load failed: ${e.message}", e)
             transition(AgentState.CriticalError(e, "Caricamento modello fallito: ${e.message}"))
+        } catch (e: Error) {
+            // Catches NoSuchMethodError, UnsatisfiedLinkError, etc. from native libs
+            Log.e(TAG, "Fatal error loading model (native/API mismatch?): ${e.message}", e)
+            transition(AgentState.CriticalError(
+                RuntimeException("Fatal: ${e.message}", e),
+                "Errore fatale nel caricamento: ${e.message}\n" +
+                "Il file potrebbe essere incompatibile con la libreria LiteRT-LM installata."
+            ))
         }
     }
 
