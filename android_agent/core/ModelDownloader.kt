@@ -2,6 +2,7 @@ package com.example.agent.core
 
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
@@ -12,15 +13,23 @@ import java.net.URL
 
 sealed class DownloadState {
     object Idle : DownloadState()
-    data class Downloading(val progress: Float) : DownloadState()
+    data class Downloading(
+        val progress: Float?,
+        val downloadedBytes: Long,
+        val totalBytes: Long?,
+    ) : DownloadState()
     data class Success(val file: File) : DownloadState()
     data class Error(val message: String) : DownloadState()
 }
 
 object ModelDownloader {
-    fun downloadModel(urlStr: String, destFile: File): Flow<DownloadState> = flow {
+    fun downloadModel(urlStr: String, destFile: File, expectedMinBytes: Long = 1L): Flow<DownloadState> = flow {
+        val tmpFile = File(destFile.parentFile, "${destFile.name}.download")
         try {
-            emit(DownloadState.Downloading(0f))
+            destFile.parentFile?.mkdirs()
+            if (tmpFile.exists()) tmpFile.delete()
+
+            emit(DownloadState.Downloading(progress = 0f, downloadedBytes = 0L, totalBytes = null))
             var currentUrl = urlStr
             var connection: HttpURLConnection
             var redirects = 0
@@ -29,7 +38,9 @@ object ModelDownloader {
             while (true) {
                 val url = URL(currentUrl)
                 connection = url.openConnection() as HttpURLConnection
-                connection.instanceFollowRedirects = true // Try auto-follow first
+                connection.instanceFollowRedirects = true
+                connection.connectTimeout = 20_000
+                connection.readTimeout = 60_000
 
                 val status = connection.responseCode
                 if (status == HttpURLConnection.HTTP_MOVED_TEMP ||
@@ -42,6 +53,10 @@ object ModelDownloader {
                         return@flow
                     }
                     val newUrl = connection.getHeaderField("Location")
+                    if (newUrl.isNullOrBlank()) {
+                        emit(DownloadState.Error("Redirect without Location header"))
+                        return@flow
+                    }
                     Log.d("ModelDownloader", "Redirecting to: $newUrl")
                     currentUrl = newUrl
                     redirects++
@@ -55,27 +70,58 @@ object ModelDownloader {
                 return@flow
             }
 
-            val fileLength = connection.contentLength
-            val input = connection.inputStream
-            val output = FileOutputStream(destFile)
+            val fileLength = connection.contentLengthLong.takeIf { it > 0L }
 
             val data = ByteArray(8192)
             var total: Long = 0
             var count: Int
 
-            while (input.read(data).also { count = it } != -1) {
-                total += count
-                if (fileLength > 0) {
-                    emit(DownloadState.Downloading(total.toFloat() / fileLength.toFloat()))
+            connection.inputStream.use { input ->
+                FileOutputStream(tmpFile).use { output ->
+                    while (input.read(data).also { count = it } != -1) {
+                        total += count
+                        if (fileLength != null) {
+                            emit(
+                                DownloadState.Downloading(
+                                    progress = total.toFloat() / fileLength.toFloat(),
+                                    downloadedBytes = total,
+                                    totalBytes = fileLength,
+                                ),
+                            )
+                        } else {
+                            emit(
+                                DownloadState.Downloading(
+                                    progress = null,
+                                    downloadedBytes = total,
+                                    totalBytes = null,
+                                ),
+                            )
+                        }
+                        output.write(data, 0, count)
+                    }
+                    output.flush()
                 }
-                output.write(data, 0, count)
             }
 
-            output.flush()
-            output.close()
-            input.close()
+            if (total < expectedMinBytes) {
+                tmpFile.delete()
+                emit(DownloadState.Error("Downloaded file is too small (${total} bytes)"))
+                return@flow
+            }
+
+            if (destFile.exists()) destFile.delete()
+            if (!tmpFile.renameTo(destFile)) {
+                tmpFile.delete()
+                emit(DownloadState.Error("Could not finalize downloaded file"))
+                return@flow
+            }
+
             emit(DownloadState.Success(destFile))
+        } catch (_: CancellationException) {
+            tmpFile.delete()
+            throw
         } catch (e: Exception) {
+            tmpFile.delete()
             emit(DownloadState.Error(e.message ?: "Unknown download error"))
         }
     }.flowOn(Dispatchers.IO)

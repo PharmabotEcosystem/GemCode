@@ -98,6 +98,7 @@ import com.example.agent.orchestrator.ChatRole
 import com.example.agent.mvi.AgentState
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import kotlin.math.roundToInt
 
 // ─── Navigation ───────────────────────────────────────────────────────────────
 
@@ -108,6 +109,23 @@ enum class Screen { CHAT, MODELS, SKILLS, PLUGINS, SETTINGS }
 data class ChatEntry(val role: String, val content: String)
 
 // ModelBackend, GemmaModel and AVAILABLE_MODELS are defined in GemmaModels.kt
+
+private fun expectedMinModelBytes(fileSizeMb: Int): Long {
+    if (fileSizeMb <= 0) return 1L
+    val expected = fileSizeMb.toLong() * 1024L * 1024L
+    // Keep tolerance for approximate catalog size values while rejecting partial downloads.
+    return (expected * 8L) / 10L
+}
+
+private fun isValidModelFile(file: File, fileSizeMb: Int): Boolean {
+    if (!file.exists()) return false
+    return file.length() >= expectedMinModelBytes(fileSizeMb)
+}
+
+private fun formatBytesToMb(bytes: Long): String {
+    val mb = bytes.toDouble() / (1024.0 * 1024.0)
+    return "${(mb * 10.0).roundToInt() / 10.0} MB"
+}
 
 // ─── McpServer / Plugin Management ───────────────────────────────────────────
 
@@ -196,7 +214,7 @@ class MainActivity : ComponentActivity(), Shizuku.OnRequestPermissionResultListe
                 viewModel.initializeModel("ollama://$ollamaUrl|$ollamaModel", false)
             else -> {
                 val modelFile = File(filesDir, currentModel.filename)
-                if (modelFile.exists()) {
+                if (isValidModelFile(modelFile, currentModel.fileSizeMb)) {
                     viewModel.initializeModel(modelFile.absolutePath, currentModel.useGpu)
                 }
             }
@@ -304,7 +322,7 @@ class MainActivity : ComponentActivity(), Shizuku.OnRequestPermissionResultListe
                 viewModel.initializeModel("ollama://$ollamaUrl|$ollamaModel", false)
             else -> {
                 val file = File(filesDir, model.filename)
-                if (file.exists()) {
+                if (isValidModelFile(file, model.fileSizeMb)) {
                     viewModel.initializeModel(file.absolutePath, model.useGpu)
                 }
             }
@@ -807,10 +825,11 @@ fun ModelsScreen(modelIndex: Int, lmStudioUrl: String, ollamaUrl: String, ollama
             AVAILABLE_MODELS.forEachIndexed { idx, model ->
                 item(key = idx) {
                     val isServerModel = model.backend == ModelBackend.LM_STUDIO || model.backend == ModelBackend.OLLAMA
+                    val file = remember(model.filename) { File(context.filesDir, model.filename) }
+                    val state = downloadStates[idx]
                     val isLocal  = if (isServerModel) true
-                                   else remember(downloadStates[idx]) { File(context.filesDir, model.filename).exists() }
+                                   else isValidModelFile(file, model.fileSizeMb)
                     val isActive = idx == modelIndex
-                    val state    = downloadStates[idx]
                     val serverUrl = when (model.backend) {
                         ModelBackend.LM_STUDIO -> lmStudioUrl
                         ModelBackend.OLLAMA    -> "$ollamaUrl ($ollamaModel)"
@@ -826,8 +845,11 @@ fun ModelsScreen(modelIndex: Int, lmStudioUrl: String, ollamaUrl: String, ollama
                         onActivate = { onSelectModel(idx) },
                         onDownload = {
                             scope.launch {
-                                val file = File(context.filesDir, model.filename)
-                                ModelDownloader.downloadModel(model.url, file).collectLatest { s ->
+                                ModelDownloader.downloadModel(
+                                    urlStr = model.url,
+                                    destFile = file,
+                                    expectedMinBytes = expectedMinModelBytes(model.fileSizeMb),
+                                ).collectLatest { s ->
                                     downloadStates[idx] = s
                                     if (s is DownloadState.Success) onSelectModel(idx)
                                 }
@@ -894,13 +916,24 @@ private fun ModelCard(
 
             when {
                 dlState is DownloadState.Downloading -> {
-                    LinearProgressIndicator(
-                        progress = { dlState.progress },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Text("${(dlState.progress * 100).toInt()}%",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (dlState.progress != null) {
+                        LinearProgressIndicator(
+                            progress = { dlState.progress },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Text(
+                            "${(dlState.progress * 100).toInt()}% · ${formatBytesToMb(dlState.downloadedBytes)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        Text(
+                            "Scaricati ${formatBytesToMb(dlState.downloadedBytes)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
                 dlState is DownloadState.Error -> {
                     Text("Errore: ${dlState.message}",
