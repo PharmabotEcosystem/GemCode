@@ -1,0 +1,934 @@
+import asyncio
+from collections import deque
+import io
+import json
+import logging
+import os
+import re
+import socket
+import tempfile
+import time
+import uuid
+import wave
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import aiohttp
+from aiohttp import web
+import edge_tts
+from faster_whisper import WhisperModel
+
+from wyoming.asr import Transcribe, Transcript
+from wyoming.audio import AudioChunk, AudioStart, AudioStop
+from wyoming.event import Event
+from wyoming.info import AsrModel, AsrProgram, Attribution, Describe, Info, TtsProgram, TtsVoice
+from wyoming.server import AsyncEventHandler, AsyncTcpServer
+from wyoming.tts import Synthesize
+
+DEFAULT_GEMCODE_AGENT_URL = "http://localhost:11434/api/chat"
+DEFAULT_GEMCODE_MODEL = "gemma4"
+DEFAULT_GEMCODE_SYSTEM_PROMPT = (
+    "Rispondi sempre in italiano colloquiale come assistente vocale locale di GemCode. "
+    "Mantieni la risposta molto breve: massimo due frasi corte. "
+    "Non usare markdown, elenchi, titoli, citazioni o spiegazioni metalinguistiche. "
+    "Se l'input e' confuso, offensivo o sembra rumore, chiedi semplicemente di ripetere."
+)
+WHISPER_MODEL = "tiny"
+WHISPER_LANGUAGE = "it"
+WYOMING_PORT = 10300
+HTTP_PORT = 10301
+UDP_AUDIO_PORT = 10310
+UDP_CONTROL_PORT = 10311
+HOST = "0.0.0.0"
+AUDIO_RATE = 16000
+AUDIO_WIDTH = 2   # 16-bit PCM
+AUDIO_CHANNELS = 1
+SESSION_TTL_SECONDS = 300
+BRIDGE_PUBLIC_HOST = os.getenv("GEMCODE_BRIDGE_HOST", "192.168.1.76")
+DEVICE_ACTIVE_TIMEOUT_SECONDS = 30
+BRIDGE_SETTINGS_FILE = Path(__file__).with_name("gemcode_voice_bridge_settings.json")
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("gemcode_bridge")
+
+
+class InMemoryLogHandler(logging.Handler):
+    def __init__(self, max_entries: int = 120) -> None:
+        super().__init__()
+        self.entries: deque[dict[str, str]] = deque(maxlen=max_entries)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            message = self.format(record)
+        except Exception:
+            message = record.getMessage()
+
+        self.entries.append(
+            {
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(record.created)),
+                "level": record.levelname,
+                "message": message,
+            }
+        )
+
+    def snapshot(self) -> list[dict[str, str]]:
+        return list(self.entries)
+
+
+log_buffer_handler = InMemoryLogHandler()
+log_buffer_handler.setLevel(logging.INFO)
+log_buffer_handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+logger.addHandler(log_buffer_handler)
+
+logger.info(f"Caricamento modello Whisper '{WHISPER_MODEL}'...")
+stt_model = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8")
+
+_WYOMING_INFO = Info(
+    asr=[AsrProgram(
+        name="gemcode-whisper",
+        description="faster-whisper STT per GemCode",
+        version="1.0",
+        attribution=Attribution(name="GemCode", url=""),
+        installed=True,
+        models=[AsrModel(
+            name=WHISPER_MODEL,
+            description=f"Whisper {WHISPER_MODEL}",
+            version="1.0",
+            attribution=Attribution(name="OpenAI", url="https://github.com/openai/whisper"),
+            installed=True,
+            languages=[WHISPER_LANGUAGE],
+        )],
+    )],
+    tts=[TtsProgram(
+        name="edge-tts",
+        description="Microsoft Edge TTS",
+        version="1.0",
+        attribution=Attribution(name="Microsoft", url=""),
+        installed=True,
+        voices=[TtsVoice(
+            name="it-IT-ElsaNeural",
+            description="Elsa (Italiano)",
+            version="1.0",
+            attribution=Attribution(name="Microsoft", url=""),
+            installed=True,
+            languages=[WHISPER_LANGUAGE],
+        )],
+    )],
+)
+
+VOICE_AUDIO_DIR = Path(tempfile.gettempdir()) / "gemcode_voice_bridge"
+VOICE_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def detect_public_host() -> str:
+    env_host = os.getenv("GEMCODE_BRIDGE_HOST")
+    if env_host:
+        return env_host
+
+    return BRIDGE_PUBLIC_HOST
+
+
+@dataclass
+class VoiceSession:
+    device_id: str
+    remote_ip: str
+    sample_rate: int = AUDIO_RATE
+    sample_width: int = AUDIO_WIDTH
+    channels: int = AUDIO_CHANNELS
+    status: str = "idle"
+    transcript: str = ""
+    response_text: str = ""
+    audio_url: str = ""
+    audio_path: str = ""
+    error: str = ""
+    last_update: float = field(default_factory=time.monotonic)
+    audio_buffer: bytearray = field(default_factory=bytearray)
+
+
+@dataclass
+class DeviceState:
+    device_id: str
+    remote_ip: str = ""
+    firmware_mode: str = "ptt"
+    wake_word_label: str = "GEMMA"
+    wake_word_model: str = "placeholder - serve un modello GEMMA dedicato"
+    device_name: str = "Home Assistant Voice PE"
+    last_seen: float = field(default_factory=time.time)
+
+
+@dataclass
+class BridgeConfig:
+    agent_url: str = DEFAULT_GEMCODE_AGENT_URL
+    model: str = DEFAULT_GEMCODE_MODEL
+    system_prompt: str = DEFAULT_GEMCODE_SYSTEM_PROMPT
+    temperature: float = 0.2
+    max_response_sentences: int = 2
+    max_response_chars: int = 220
+    tts_voice: str = "it-IT-ElsaNeural"
+    device_id: str = "box3"
+    device_name: str = "Home Assistant Voice PE"
+    device_mode: str = "ptt"
+    wake_word_label: str = "GEMMA"
+    wake_word_model: str = "placeholder - serve un modello GEMMA dedicato"
+    wake_word_notes: str = "Per una vera wake word GEMMA serve un modello micro_wake_word dedicato."
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> "BridgeConfig":
+        return cls(
+            agent_url=str(data.get("agent_url", DEFAULT_GEMCODE_AGENT_URL)),
+            model=str(data.get("model", DEFAULT_GEMCODE_MODEL)),
+            system_prompt=str(data.get("system_prompt", DEFAULT_GEMCODE_SYSTEM_PROMPT)),
+            temperature=float(data.get("temperature", 0.2)),
+            max_response_sentences=max(1, int(data.get("max_response_sentences", 2))),
+            max_response_chars=max(80, int(data.get("max_response_chars", 220))),
+            tts_voice=str(data.get("tts_voice", "it-IT-ElsaNeural")),
+            device_id=str(data.get("device_id", "box3")),
+            device_name=str(data.get("device_name", "Home Assistant Voice PE")),
+            device_mode=str(data.get("device_mode", "ptt")),
+            wake_word_label=str(data.get("wake_word_label", "GEMMA")),
+            wake_word_model=str(data.get("wake_word_model", "placeholder - serve un modello GEMMA dedicato")),
+            wake_word_notes=str(data.get("wake_word_notes", "Per una vera wake word GEMMA serve un modello micro_wake_word dedicato.")),
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "agent_url": self.agent_url,
+            "model": self.model,
+            "system_prompt": self.system_prompt,
+            "temperature": self.temperature,
+            "max_response_sentences": self.max_response_sentences,
+            "max_response_chars": self.max_response_chars,
+            "tts_voice": self.tts_voice,
+            "device_id": self.device_id,
+            "device_name": self.device_name,
+            "device_mode": self.device_mode,
+            "wake_word_label": self.wake_word_label,
+            "wake_word_model": self.wake_word_model,
+            "wake_word_notes": self.wake_word_notes,
+        }
+
+
+class BridgeConfigStore:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.config = self._load()
+
+    def _load(self) -> BridgeConfig:
+        if not self.path.exists():
+            config = BridgeConfig()
+            self.save(config)
+            return config
+
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            config = BridgeConfig()
+            self.save(config)
+            return config
+
+        return BridgeConfig.from_dict(data)
+
+    def save(self, config: BridgeConfig) -> None:
+        self.path.write_text(json.dumps(config.to_dict(), indent=2, ensure_ascii=True), encoding="utf-8")
+        self.config = config
+
+    def update(self, data: dict[str, object]) -> BridgeConfig:
+        merged = self.config.to_dict()
+        merged.update(data)
+        config = BridgeConfig.from_dict(merged)
+        self.save(config)
+        return config
+
+
+bridge_config_store = BridgeConfigStore(BRIDGE_SETTINGS_FILE)
+
+
+class BridgeState:
+    def __init__(self) -> None:
+        self.sessions: dict[str, VoiceSession] = {}
+        self.devices: dict[str, DeviceState] = {}
+        self.active_remote_sessions: dict[str, str] = {}
+        self.lock = asyncio.Lock()
+        self.public_host = detect_public_host()
+
+    async def start_session(
+        self,
+        device_id: str,
+        remote_ip: str,
+        sample_rate: int,
+        sample_width: int,
+        channels: int,
+    ) -> None:
+        async with self.lock:
+            device = self.devices.get(device_id) or DeviceState(device_id=device_id)
+            device.remote_ip = remote_ip
+            device.last_seen = time.time()
+            device.device_name = bridge_config_store.config.device_name if device_id == bridge_config_store.config.device_id else device.device_name
+            self.devices[device_id] = device
+            self.sessions[device_id] = VoiceSession(
+                device_id=device_id,
+                remote_ip=remote_ip,
+                sample_rate=sample_rate,
+                sample_width=sample_width,
+                channels=channels,
+                status="recording",
+            )
+            self.active_remote_sessions[remote_ip] = device_id
+            logger.info(
+                "Sessione PTT avviata per %s da %s (%s Hz, %s bytes, %s canali)",
+                device_id,
+                remote_ip,
+                sample_rate,
+                sample_width,
+                channels,
+            )
+
+    async def append_audio(self, remote_ip: str, packet: bytes) -> None:
+        async with self.lock:
+            device_id = self.active_remote_sessions.get(remote_ip)
+            if not device_id:
+                return
+
+            session = self.sessions.get(device_id)
+            if not session or session.status != "recording":
+                return
+
+            session.audio_buffer.extend(packet)
+            session.last_update = time.monotonic()
+
+    async def mark_device_seen(
+        self,
+        device_id: str,
+        remote_ip: str,
+        firmware_mode: str | None = None,
+        wake_word_label: str | None = None,
+        wake_word_model: str | None = None,
+        device_name: str | None = None,
+    ) -> DeviceState:
+        async with self.lock:
+            device = self.devices.get(device_id) or DeviceState(device_id=device_id)
+            device.remote_ip = remote_ip
+            device.last_seen = time.time()
+            if firmware_mode:
+                device.firmware_mode = firmware_mode
+            if wake_word_label:
+                device.wake_word_label = wake_word_label
+            if wake_word_model:
+                device.wake_word_model = wake_word_model
+            if device_name:
+                device.device_name = device_name
+            self.devices[device_id] = device
+            return device
+
+    async def stop_session(self, device_id: str) -> VoiceSession | None:
+        async with self.lock:
+            session = self.sessions.get(device_id)
+            if not session:
+                return None
+
+            session.status = "processing"
+            session.last_update = time.monotonic()
+            self.active_remote_sessions.pop(session.remote_ip, None)
+            return session
+
+    async def get_session(self, device_id: str) -> VoiceSession | None:
+        async with self.lock:
+            return self.sessions.get(device_id)
+
+    async def get_device_snapshot(self, device_id: str) -> dict[str, object] | None:
+        async with self.lock:
+            device = self.devices.get(device_id)
+            if not device:
+                return None
+
+            session = self.sessions.get(device_id)
+            is_online = (time.time() - device.last_seen) <= DEVICE_ACTIVE_TIMEOUT_SECONDS
+            return {
+                "device_id": device.device_id,
+                "device_name": device.device_name,
+                "remote_ip": device.remote_ip,
+                "firmware_mode": device.firmware_mode,
+                "wake_word_label": device.wake_word_label,
+                "wake_word_model": device.wake_word_model,
+                "status": "online" if is_online else "offline",
+                "last_seen_epoch": device.last_seen,
+                "last_seen_iso": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(device.last_seen)),
+                "voice_session_status": session.status if session else "idle",
+                "last_transcript": session.transcript if session else "",
+                "last_response_text": session.response_text if session else "",
+                "audio_url": session.audio_url if session else "",
+                "error": session.error if session else "",
+            }
+
+    async def list_devices_snapshot(self) -> list[dict[str, object]]:
+        async with self.lock:
+            device_ids = list(self.devices.keys())
+
+        snapshots: list[dict[str, object]] = []
+        for device_id in device_ids:
+            snapshot = await self.get_device_snapshot(device_id)
+            if snapshot:
+                snapshots.append(snapshot)
+        return snapshots
+
+    async def health_snapshot(self) -> dict[str, object]:
+        devices = await self.list_devices_snapshot()
+        active_sessions = 0
+        error_sessions = 0
+
+        async with self.lock:
+            for session in self.sessions.values():
+                if session.status not in {"idle", "done"}:
+                    active_sessions += 1
+                if session.error:
+                    error_sessions += 1
+
+        latest_audio_url = ""
+        latest_audio_device_id = ""
+        latest_error = ""
+        latest_transcript = ""
+        latest_response_text = ""
+        latest_seen_epoch = 0.0
+        latest_seen_iso = ""
+
+        for device in devices:
+            last_seen_epoch = float(device.get("last_seen_epoch", 0) or 0)
+            if last_seen_epoch >= latest_seen_epoch:
+                latest_seen_epoch = last_seen_epoch
+                latest_seen_iso = str(device.get("last_seen_iso", ""))
+                latest_audio_url = str(device.get("audio_url", ""))
+                latest_audio_device_id = str(device.get("device_id", ""))
+                latest_error = str(device.get("error", ""))
+                latest_transcript = str(device.get("last_transcript", ""))
+                latest_response_text = str(device.get("last_response_text", ""))
+
+        return {
+            "status": "ok",
+            "public_host": self.public_host,
+            "bridge_settings_file": str(BRIDGE_SETTINGS_FILE),
+            "ports": {
+                "wyoming": WYOMING_PORT,
+                "http": HTTP_PORT,
+                "udp_audio": UDP_AUDIO_PORT,
+                "udp_control": UDP_CONTROL_PORT,
+            },
+            "config": bridge_config_store.config.to_dict(),
+            "devices": devices,
+            "device_count": len(devices),
+            "active_sessions": active_sessions,
+            "error_sessions": error_sessions,
+            "latest_audio_url": latest_audio_url,
+            "latest_audio_device_id": latest_audio_device_id,
+            "latest_error": latest_error,
+            "latest_transcript": latest_transcript,
+            "latest_response_text": latest_response_text,
+            "latest_seen_iso": latest_seen_iso,
+            "recent_logs": log_buffer_handler.snapshot(),
+        }
+
+    async def set_ready(self, device_id: str, transcript: str, response_text: str, audio_name: str) -> None:
+        async with self.lock:
+            session = self.sessions.get(device_id)
+            if not session:
+                return
+
+            session.transcript = transcript
+            session.response_text = response_text
+            session.audio_path = str(VOICE_AUDIO_DIR / audio_name)
+            session.audio_url = f"http://{self.public_host}:{HTTP_PORT}/audio/{audio_name}"
+            session.status = "ready"
+            session.error = ""
+            session.last_update = time.monotonic()
+
+    async def set_error(self, device_id: str, error_message: str) -> None:
+        async with self.lock:
+            session = self.sessions.get(device_id)
+            if not session:
+                return
+
+            session.status = "error"
+            session.error = error_message
+            session.last_update = time.monotonic()
+
+    async def cleanup_expired(self) -> None:
+        while True:
+            await asyncio.sleep(30)
+            deadline = time.monotonic() - SESSION_TTL_SECONDS
+            async with self.lock:
+                expired = [
+                    device_id
+                    for device_id, session in self.sessions.items()
+                    if session.last_update < deadline
+                ]
+
+                for device_id in expired:
+                    session = self.sessions.pop(device_id)
+                    self.active_remote_sessions.pop(session.remote_ip, None)
+                    if session.audio_path:
+                        try:
+                            Path(session.audio_path).unlink(missing_ok=True)
+                        except OSError:
+                            logger.warning("Impossibile rimuovere %s", session.audio_path)
+
+
+bridge_state = BridgeState()
+
+
+def _write_wav_bytes(audio_frames: bytes, sample_rate: int, sample_width: int, channels: int) -> bytes:
+    wav_io = io.BytesIO()
+    with wave.open(wav_io, "wb") as wav_file:
+        wav_file.setnchannels(channels)
+        wav_file.setsampwidth(sample_width)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(audio_frames)
+    return wav_io.getvalue()
+
+
+def _convert_int32_channel_to_pcm16(
+    audio_buffer: bytes,
+    channels: int,
+    channel_index: int,
+    shift: int,
+) -> tuple[bytes, int]:
+    converted = bytearray()
+    peak = 0
+    frame_size = 4 * channels
+    sample_offset = channel_index * 4
+    for offset in range(0, len(audio_buffer) - frame_size + 1, frame_size):
+        sample = int.from_bytes(
+            audio_buffer[offset + sample_offset:offset + sample_offset + 4],
+            byteorder="little",
+            signed=True,
+        )
+        pcm16_sample = max(min(sample >> shift, 32767), -32768)
+        peak = max(peak, abs(pcm16_sample))
+        converted.extend(int(pcm16_sample).to_bytes(2, byteorder="little", signed=True))
+
+    return bytes(converted), peak
+
+
+def build_wav_candidates(audio_buffer: bytes, sample_rate: int, sample_width: int, channels: int) -> list[tuple[str, bytes, int]]:
+    if sample_width not in (2, 4):
+        raise ValueError(f"Sample width non supportata: {sample_width}")
+
+    if sample_width == 4:
+        candidates: list[tuple[str, bytes, int]] = []
+        for channel_index in range(channels):
+            for shift in (16, 12, 8):
+                pcm16_frames, peak = _convert_int32_channel_to_pcm16(audio_buffer, channels, channel_index, shift)
+                label = f"ch{channel_index}_shift{shift}"
+                candidates.append((label, _write_wav_bytes(pcm16_frames, sample_rate, 2, 1), peak))
+        return candidates
+
+    wav_frames = audio_buffer
+    peak = 0
+    if channels > 1:
+        converted = bytearray()
+        frame_size = sample_width * channels
+        for offset in range(0, len(audio_buffer) - frame_size + 1, frame_size):
+            sample_bytes = audio_buffer[offset:offset + sample_width]
+            sample = int.from_bytes(sample_bytes, byteorder="little", signed=True)
+            peak = max(peak, abs(sample))
+            converted.extend(sample_bytes)
+
+        wav_frames = bytes(converted)
+        channels = 1
+    else:
+        for offset in range(0, len(audio_buffer) - sample_width + 1, sample_width):
+            sample = int.from_bytes(audio_buffer[offset:offset + sample_width], byteorder="little", signed=True)
+            peak = max(peak, abs(sample))
+
+    return [("default", _write_wav_bytes(wav_frames, sample_rate, sample_width, channels), peak)]
+
+
+def build_wav_bytes(audio_buffer: bytes, sample_rate: int, sample_width: int, channels: int) -> bytes:
+    return build_wav_candidates(audio_buffer, sample_rate, sample_width, channels)[0][1]
+
+
+def normalize_voice_text(text: str, max_sentences: int, max_chars: int) -> str:
+    cleaned_lines: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line in {"***", "---"}:
+            continue
+
+        if line.startswith(">"):
+            line = line.lstrip("> ").strip()
+
+        bullet_match = re.match(r"^(?:[-*•]|\d+\.)\s+", line)
+        if bullet_match:
+            line = line[bullet_match.end():].strip()
+
+        line = line.replace("**", "").replace("__", "").replace("`", "")
+        cleaned_lines.append(line)
+
+    cleaned = " ".join(cleaned_lines)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if not cleaned:
+        return "Puoi ripetere, per favore?"
+
+    sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", cleaned) if part.strip()]
+    if sentences:
+        cleaned = " ".join(sentences[:max_sentences])
+
+    if len(cleaned) > max_chars:
+        cleaned = cleaned[:max_chars - 3].rstrip(" ,;:") + "..."
+
+    return cleaned
+
+
+async def query_gemcode(text: str) -> str:
+    config = bridge_config_store.config
+    payload = {
+        "model": config.model,
+        "messages": [
+            {"role": "system", "content": config.system_prompt},
+            {"role": "user", "content": text},
+        ],
+        "stream": False,
+        "options": {"temperature": config.temperature},
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            config.agent_url,
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=90, sock_connect=15, sock_read=90),
+        ) as response:
+            if response.status != 200:
+                raise RuntimeError(f"Errore API GemCode: HTTP {response.status}")
+
+            data = await response.json()
+            return normalize_voice_text(
+                data.get("message", {}).get("content", ""),
+                max_sentences=config.max_response_sentences,
+                max_chars=config.max_response_chars,
+            )
+
+
+async def synthesize_to_mp3(text: str, device_id: str) -> str:
+    config = bridge_config_store.config
+    audio_name = f"{device_id}-{uuid.uuid4().hex}.mp3"
+    output_path = VOICE_AUDIO_DIR / audio_name
+    communicate = edge_tts.Communicate(text or "Non ho una risposta.", config.tts_voice)
+    await communicate.save(str(output_path))
+    return audio_name
+
+
+async def process_voice_session(session: VoiceSession) -> None:
+    try:
+        if not session.audio_buffer:
+            raise RuntimeError("Nessun audio ricevuto")
+
+        wav_candidates = build_wav_candidates(
+            bytes(session.audio_buffer),
+            sample_rate=session.sample_rate,
+            sample_width=session.sample_width,
+            channels=session.channels,
+        )
+
+        transcript = ""
+        selected_label = ""
+        peak_summaries: list[str] = []
+        for label, wav_bytes, peak in wav_candidates:
+            peak_summaries.append(f"{label}={peak}")
+            logger.info("PTT %s candidato audio %s peak=%s", session.device_id, label, peak)
+            if peak < 64:
+                continue
+
+            wav_io = io.BytesIO(wav_bytes)
+            segments, _ = stt_model.transcribe(wav_io, language=WHISPER_LANGUAGE)
+            transcript = " ".join(segment.text for segment in segments).strip()
+            if transcript:
+                selected_label = label
+                break
+
+        if not transcript:
+            raise RuntimeError(f"Trascrizione vuota ({', '.join(peak_summaries)})")
+
+        logger.info("PTT %s ha detto (%s): '%s'", session.device_id, selected_label, transcript)
+        try:
+            response_text = await query_gemcode(transcript)
+        except asyncio.TimeoutError:
+            response_text = "GemCode non ha risposto in tempo. Riprova tra poco."
+        except Exception as exc:
+            logger.warning("Fallback risposta vocale per %s dopo errore GemCode: %s", session.device_id, exc)
+            response_text = "Non sono riuscito a contattare GemCode in questo momento."
+        logger.info("Risposta GemCode per %s: %s", session.device_id, response_text)
+        audio_name = await synthesize_to_mp3(response_text, session.device_id)
+        await bridge_state.set_ready(session.device_id, transcript, response_text, audio_name)
+    except Exception as exc:
+        logger.exception("Errore pipeline PTT per %s", session.device_id)
+        await bridge_state.set_error(session.device_id, str(exc))
+
+
+class ControlProtocol(asyncio.DatagramProtocol):
+    def datagram_received(self, data: bytes, addr) -> None:
+        remote_ip = addr[0]
+        try:
+            payload = data.decode("utf-8").strip()
+            command, *parts = payload.split("|")
+        except UnicodeDecodeError:
+            logger.warning("Pacchetto di controllo non valido da %s", remote_ip)
+            return
+
+        if command == "START" and len(parts) >= 4:
+            device_id = parts[0]
+            sample_rate = int(parts[1])
+            sample_width = int(parts[2])
+            channels = int(parts[3])
+            asyncio.create_task(
+                bridge_state.start_session(device_id, remote_ip, sample_rate, sample_width, channels)
+            )
+            return
+
+        if command == "STOP" and parts:
+            device_id = parts[0]
+
+            async def stop_and_process() -> None:
+                session = await bridge_state.stop_session(device_id)
+                if session:
+                    await process_voice_session(session)
+
+            asyncio.create_task(stop_and_process())
+            return
+
+        logger.warning("Comando controllo sconosciuto da %s: %s", remote_ip, payload)
+
+
+class AudioProtocol(asyncio.DatagramProtocol):
+    def datagram_received(self, data: bytes, addr) -> None:
+        asyncio.create_task(bridge_state.append_audio(addr[0], data))
+
+
+async def handle_health(_request: web.Request) -> web.Response:
+    snapshot = await bridge_state.health_snapshot()
+    snapshot.pop("recent_logs", None)
+    snapshot.pop("devices", None)
+    snapshot.pop("config", None)
+    return web.json_response(snapshot)
+
+
+async def handle_bridge_health(_request: web.Request) -> web.Response:
+    return web.json_response(await bridge_state.health_snapshot())
+
+
+async def handle_voice_session(request: web.Request) -> web.Response:
+    device_id = request.query.get("device_id", "").strip()
+    if not device_id:
+        return web.json_response({"error": "device_id mancante"}, status=400)
+
+    session = await bridge_state.get_session(device_id)
+    if not session:
+        return web.json_response({"status": "idle"})
+
+    return web.json_response(
+        {
+            "status": session.status,
+            "transcript": session.transcript,
+            "response_text": session.response_text,
+            "audio_url": session.audio_url,
+            "error": session.error,
+        }
+    )
+
+
+async def handle_device_ping(request: web.Request) -> web.Response:
+    device_id = request.query.get("device_id", bridge_config_store.config.device_id).strip()
+    firmware_mode = request.query.get("firmware_mode", "ptt").strip() or "ptt"
+    wake_word_label = request.query.get("wake_word_label", bridge_config_store.config.wake_word_label).strip()
+    wake_word_model = request.query.get("wake_word_model", bridge_config_store.config.wake_word_model).strip()
+    device_name = request.query.get("device_name", bridge_config_store.config.device_name).strip()
+    remote_ip = request.remote or ""
+
+    await bridge_state.mark_device_seen(
+        device_id=device_id,
+        remote_ip=remote_ip,
+        firmware_mode=firmware_mode,
+        wake_word_label=wake_word_label,
+        wake_word_model=wake_word_model,
+        device_name=device_name,
+    )
+    snapshot = await bridge_state.get_device_snapshot(device_id)
+    return web.json_response(snapshot or {"status": "unknown"})
+
+
+async def handle_device_status(request: web.Request) -> web.Response:
+    device_id = request.query.get("device_id", bridge_config_store.config.device_id).strip()
+    snapshot = await bridge_state.get_device_snapshot(device_id)
+    if not snapshot:
+        return web.json_response({"status": "unknown", "device_id": device_id}, status=404)
+    return web.json_response(snapshot)
+
+
+async def handle_devices(_request: web.Request) -> web.Response:
+    return web.json_response({"devices": await bridge_state.list_devices_snapshot()})
+
+
+async def handle_settings(request: web.Request) -> web.Response:
+    if request.method == "GET":
+        return web.json_response(bridge_config_store.config.to_dict())
+
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "JSON non valido"}, status=400)
+
+    if not isinstance(data, dict):
+        return web.json_response({"error": "Payload non valido"}, status=400)
+
+    updated = bridge_config_store.update(data)
+    await bridge_state.mark_device_seen(
+        device_id=updated.device_id,
+        remote_ip="",
+        firmware_mode=updated.device_mode,
+        wake_word_label=updated.wake_word_label,
+        wake_word_model=updated.wake_word_model,
+        device_name=updated.device_name,
+    )
+    return web.json_response(updated.to_dict())
+
+
+async def handle_audio(request: web.Request) -> web.Response:
+    audio_name = request.match_info["audio_name"]
+    audio_path = VOICE_AUDIO_DIR / audio_name
+    if not audio_path.exists():
+        raise web.HTTPNotFound(text="audio non trovato")
+    return web.FileResponse(audio_path)
+
+
+@web.middleware
+async def cors_middleware(request: web.Request, handler):
+    if request.method == "OPTIONS":
+        response = web.Response(status=200)
+    else:
+        response = await handler(request)
+
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    return response
+
+
+async def run_http_server() -> None:
+    app = web.Application(middlewares=[cors_middleware])
+    app.router.add_get("/health", handle_health)
+    app.router.add_get("/api/bridge/health", handle_bridge_health)
+    app.router.add_get("/api/voice/session", handle_voice_session)
+    app.router.add_get("/api/device/ping", handle_device_ping)
+    app.router.add_get("/api/device/status", handle_device_status)
+    app.router.add_get("/api/devices", handle_devices)
+    app.router.add_get("/api/settings", handle_settings)
+    app.router.add_post("/api/settings", handle_settings)
+    app.router.add_get("/audio/{audio_name}", handle_audio)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, HOST, HTTP_PORT)
+    await site.start()
+    logger.info("GemCode HTTP bridge attivo su %s:%s", HOST, HTTP_PORT)
+    await asyncio.Event().wait()
+
+
+async def run_udp_server(port: int, protocol_factory) -> None:
+    loop = asyncio.get_running_loop()
+    transport, _ = await loop.create_datagram_endpoint(protocol_factory, local_addr=(HOST, port))
+    logger.info("GemCode UDP listener attivo su %s:%s", HOST, port)
+    try:
+        await asyncio.Event().wait()
+    finally:
+        transport.close()
+
+
+class GemCodeHandler(AsyncEventHandler):
+    def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        super().__init__(reader, writer)
+        self.audio_buffer = bytearray()
+        self.audio_rate: int = AUDIO_RATE
+
+    async def handle_event(self, event: Event) -> bool:
+        if Describe.is_type(event.type):
+            await self.write_event(_WYOMING_INFO.event())
+            return True
+
+        if Transcribe.is_type(event.type):
+            logger.info("Sessione ASR avviata (Transcribe ricevuto)")
+            self.audio_buffer = bytearray()
+            return True
+
+        if AudioStart.is_type(event.type):
+            chunk = AudioStart.from_event(event)
+            self.audio_rate = chunk.rate
+            self.audio_buffer = bytearray()
+            logger.info(f"Audio stream avviato ({self.audio_rate}Hz)")
+            return True
+
+        if AudioChunk.is_type(event.type):
+            chunk = AudioChunk.from_event(event)
+            self.audio_buffer.extend(chunk.audio)
+            return True
+
+        if AudioStop.is_type(event.type):
+            logger.info(f"Audio stream terminato ({len(self.audio_buffer)} bytes). Trascrivo...")
+
+            wav_io = io.BytesIO(
+                build_wav_bytes(
+                    bytes(self.audio_buffer),
+                    sample_rate=self.audio_rate,
+                    sample_width=AUDIO_WIDTH,
+                    channels=AUDIO_CHANNELS,
+                )
+            )
+            segments, _ = stt_model.transcribe(wav_io, language=WHISPER_LANGUAGE)
+            text = " ".join(s.text for s in segments).strip()
+            logger.info(f"Utente ha detto: '{text}'")
+
+            await self.write_event(Transcript(text=text).event())
+
+            if text:
+                await self.process_command(text)
+            return False
+
+        if Synthesize.is_type(event.type):
+            synthesize = Synthesize.from_event(event)
+            logger.info(f"Richiesta TTS: '{synthesize.text}'")
+            await self.speak(synthesize.text)
+            return False
+
+        return True
+
+    async def process_command(self, text: str):
+        try:
+            logger.info("Invio a GemCode Agent: %s", bridge_config_store.config.agent_url)
+            response_text = await query_gemcode(text)
+            logger.info(f"Risposta GemCode: {response_text}")
+            await self.speak(response_text)
+        except Exception as exc:
+            logger.error(f"Comunicazione con GemCode fallita: {exc}")
+
+    async def speak(self, text: str):
+        logger.info(f"Generazione TTS: {text}")
+        communicate = edge_tts.Communicate(text, "it-IT-ElsaNeural")
+
+        await self.write_event(AudioStart(rate=24000, width=2, channels=1).event())
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                await self.write_event(AudioChunk(audio=chunk["data"]).event())
+        await self.write_event(AudioStop().event())
+
+async def main():
+    server = AsyncTcpServer(HOST, WYOMING_PORT)
+    logger.info(f"GemCode Wyoming Bridge attivo su {HOST}:{WYOMING_PORT}")
+    await asyncio.gather(
+        server.run(GemCodeHandler),
+        run_http_server(),
+        run_udp_server(UDP_AUDIO_PORT, AudioProtocol),
+        run_udp_server(UDP_CONTROL_PORT, ControlProtocol),
+        bridge_state.cleanup_expired(),
+    )
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass

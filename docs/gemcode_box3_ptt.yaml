@@ -1,0 +1,414 @@
+substitutions:
+  name: gemcode-ptt
+  friendly_name: GemCode PTT Voice
+  device_id: box3
+  device_name: Home Assistant Voice PE
+  wifi_ssid: !secret gemcode_wifi_ssid
+  wifi_password: !secret gemcode_wifi_password
+  bridge_host: !secret gemcode_bridge_host
+  bridge_http_port: "10301"
+  bridge_udp_audio_port: "10310"
+  bridge_udp_control_port: "10311"
+  api_encryption_key: !secret gemcode_api_encryption_key
+
+external_components:
+  - source:
+      type: git
+      url: https://github.com/esphome/home-assistant-voice-pe
+      ref: dev
+    components:
+      - voice_kit
+    refresh: 0s
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  name_add_mac_suffix: true
+  min_version: "2026.3.0"
+  on_boot:
+    priority: 350
+    then:
+      - switch.turn_on: internal_speaker_amp
+      - media_player.volume_set:
+          id: gemcode_media_player
+          volume: 65%
+      - script.execute: show_idle
+      - logger.log: "GemCode PTT firmware avviato"
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  cpu_frequency: 240MHz
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+    version: recommended
+    sdkconfig_options:
+      CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
+      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
+      CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB: "y"
+      CONFIG_SPIRAM_RODATA: "y"
+      CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
+
+psram:
+  mode: octal
+  speed: 80MHz
+  ignore_not_found: false
+
+wifi:
+  ssid: ${wifi_ssid}
+  password: ${wifi_password}
+  ap:
+    ssid: "${friendly_name} Fallback"
+    password: "gemcode123"
+
+api:
+  encryption:
+    key: ${api_encryption_key}
+
+ota:
+  - platform: esphome
+
+logger:
+  level: DEBUG
+  hardware_uart: USB_SERIAL_JTAG
+
+web_server:
+  port: 80
+
+captive_portal:
+
+mdns:
+
+json:
+
+http_request:
+  timeout: 10s
+  verify_ssl: false
+  watchdog_timeout: 15s
+
+udp:
+  - id: bridge_audio_udp
+    addresses:
+      - ${bridge_host}
+    port:
+      listen_port: 18511
+      broadcast_port: ${bridge_udp_audio_port}
+  - id: bridge_control_udp
+    addresses:
+      - ${bridge_host}
+    port:
+      listen_port: 18512
+      broadcast_port: ${bridge_udp_control_port}
+
+i2c:
+  - id: internal_i2c
+    sda: GPIO5
+    scl: GPIO6
+    frequency: 400kHz
+
+i2s_audio:
+  - id: i2s_output
+    i2s_lrclk_pin: GPIO7
+    i2s_bclk_pin: GPIO8
+  - id: i2s_input
+    i2s_lrclk_pin: GPIO14
+    i2s_bclk_pin: GPIO13
+
+microphone:
+  - platform: i2s_audio
+    id: box_mic
+    i2s_din_pin: GPIO15
+    adc_type: external
+    pdm: false
+    sample_rate: 16000
+    bits_per_sample: 32bit
+    i2s_mode: secondary
+    i2s_audio_id: i2s_input
+    channel: stereo
+    on_data:
+      then:
+        - if:
+            condition:
+              lambda: return id(ptt_active);
+            then:
+              - udp.write:
+                  id: bridge_audio_udp
+                  data: !lambda |-
+                    return x;
+
+audio_dac:
+  - platform: aic3204
+    id: aic3204_dac
+    i2c_id: internal_i2c
+
+speaker:
+  - platform: i2s_audio
+    id: i2s_audio_speaker
+    sample_rate: 48000
+    i2s_mode: secondary
+    i2s_dout_pin: GPIO10
+    bits_per_sample: 32bit
+    i2s_audio_id: i2s_output
+    dac_type: external
+    channel: stereo
+    timeout: never
+    buffer_duration: 100ms
+    audio_dac: aic3204_dac
+  - platform: resampler
+    id: announcement_speaker
+    output_speaker: i2s_audio_speaker
+    sample_rate: 48000
+    bits_per_sample: 16
+
+voice_kit:
+  id: voice_kit_component
+  i2c_id: internal_i2c
+  reset_pin: GPIO4
+  firmware:
+    url: https://github.com/esphome/voice-kit-xmos-firmware/releases/download/v1.3.1/ffva_v1.3.1_upgrade.bin
+    version: "1.3.1"
+    md5: 964635c5bf125529dab14a2472a15401
+
+media_player:
+  - platform: speaker
+    id: gemcode_media_player
+    name: GemCode Media Player
+    codec_support_enabled: ALL
+    announcement_pipeline:
+      speaker: announcement_speaker
+      format: MP3
+      num_channels: 1
+      sample_rate: 24000
+    volume_min: 0.4
+    volume_initial: 0.65
+    on_announcement:
+      then:
+        - script.execute: show_speaking
+    on_idle:
+      then:
+        - if:
+            condition:
+              lambda: return !id(ptt_waiting_response);
+            then:
+              - script.execute: show_idle
+
+power_supply:
+  - id: led_power
+    pin: GPIO45
+
+switch:
+  - platform: gpio
+    pin: GPIO47
+    id: internal_speaker_amp
+    restore_mode: ALWAYS_ON
+    internal: true
+
+light:
+  - platform: esp32_rmt_led_strip
+    id: led_ring
+    name: LED Ring
+    pin: GPIO21
+    chipset: WS2812
+    num_leds: 12
+    rgb_order: grb
+    default_transition_length: 0ms
+    power_supply: led_power
+
+globals:
+  - id: ptt_active
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  - id: ptt_waiting_response
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  - id: pending_audio_url
+    type: std::string
+    restore_value: no
+    initial_value: '""'
+  - id: pending_transcript
+    type: std::string
+    restore_value: no
+    initial_value: '""'
+  - id: pending_response_text
+    type: std::string
+    restore_value: no
+    initial_value: '""'
+
+script:
+  - id: show_idle
+    then:
+      - light.turn_on:
+          id: led_ring
+          red: 0%
+          green: 0%
+          blue: 100%
+          brightness: 45%
+  - id: show_listening
+    then:
+      - light.turn_on:
+          id: led_ring
+          red: 0%
+          green: 100%
+          blue: 10%
+          brightness: 70%
+  - id: show_thinking
+    then:
+      - light.turn_on:
+          id: led_ring
+          red: 100%
+          green: 35%
+          blue: 0%
+          brightness: 70%
+  - id: show_speaking
+    then:
+      - light.turn_on:
+          id: led_ring
+          red: 0%
+          green: 75%
+          blue: 100%
+          brightness: 75%
+  - id: show_error
+    then:
+      - light.turn_on:
+          id: led_ring
+          red: 100%
+          green: 0%
+          blue: 0%
+          brightness: 80%
+  - id: start_ptt_capture
+    then:
+      - lambda: |-
+          id(ptt_active) = true;
+          id(ptt_waiting_response) = false;
+          id(pending_audio_url).clear();
+          id(pending_transcript).clear();
+          id(pending_response_text).clear();
+      - script.execute: show_listening
+      - udp.write:
+          id: bridge_control_udp
+          data: "START|${device_id}|16000|4|2"
+      - microphone.capture: box_mic
+      - logger.log: "PTT avviato"
+  - id: stop_ptt_capture
+    then:
+      - microphone.stop_capture: box_mic
+      - delay: 500ms
+      - udp.write:
+          id: bridge_control_udp
+          data: "STOP|${device_id}"
+      - lambda: |-
+          id(ptt_active) = false;
+          id(ptt_waiting_response) = true;
+      - script.execute: show_thinking
+      - logger.log: "PTT terminato, attendo risposta"
+
+binary_sensor:
+  - platform: gpio
+    pin:
+      number: GPIO0
+      inverted: true
+    filters:
+      - delayed_on: 30ms
+      - delayed_off: 350ms
+    id: center_button
+    name: Button
+    on_press:
+      then:
+        - if:
+            condition:
+              lambda: return !id(ptt_active) && !id(ptt_waiting_response);
+            then:
+              - script.execute: start_ptt_capture
+    on_release:
+      then:
+        - if:
+            condition:
+              lambda: return id(ptt_active);
+            then:
+              - script.execute: stop_ptt_capture
+
+interval:
+  - interval: 15s
+    then:
+      - http_request.get:
+          url: http://${bridge_host}:${bridge_http_port}/api/device/ping?device_id=${device_id}&device_name=${device_name}&firmware_mode=ptt&wake_word_label=PTT&wake_word_model=manual_button
+          on_error:
+            then:
+              - logger.log: "Heartbeat bridge non raggiungibile"
+  - interval: 1s
+    then:
+      - if:
+          condition:
+            lambda: return id(ptt_waiting_response) && !id(ptt_active);
+          then:
+            - http_request.get:
+                url: http://${bridge_host}:${bridge_http_port}/api/voice/session?device_id=${device_id}
+                capture_response: true
+                max_response_buffer_size: 4096
+                on_response:
+                  then:
+                    - if:
+                        condition:
+                          lambda: return response->status_code == 200;
+                        then:
+                          - lambda: |-
+                              json::parse_json(body, [](JsonObject root) -> bool {
+                                const std::string status = root["status"] | "idle";
+                                if (status == "ready") {
+                                  id(pending_audio_url) = std::string(root["audio_url"] | "");
+                                  id(pending_transcript) = std::string(root["transcript"] | "");
+                                  id(pending_response_text) = std::string(root["response_text"] | "");
+                                  return true;
+                                }
+                                if (status == "error") {
+                                  id(ptt_waiting_response) = false;
+                                  id(pending_audio_url).clear();
+                                  return true;
+                                }
+                                return true;
+                              });
+                    - if:
+                        condition:
+                          lambda: return !id(pending_audio_url).empty();
+                        then:
+                          - lambda: |-
+                              id(ptt_waiting_response) = false;
+                              id(last_transcript).publish_state(id(pending_transcript).c_str());
+                              id(last_response).publish_state(id(pending_response_text).c_str());
+                              id(gemcode_media_player)
+                                ->make_call()
+                                .set_media_url(id(pending_audio_url))
+                                .set_announcement(true)
+                                .perform();
+                          - lambda: |-
+                              id(pending_audio_url).clear();
+                    - if:
+                        condition:
+                          lambda: return !id(ptt_waiting_response) && id(pending_audio_url).empty() && body.find("\"status\":\"error\"") != std::string::npos;
+                        then:
+                          - script.execute: show_error
+                on_error:
+                  then:
+                    - logger.log: "Bridge HTTP non raggiungibile"
+
+button:
+  - platform: restart
+    name: Restart
+  - platform: factory_reset
+    name: Factory reset
+
+text_sensor:
+  - platform: template
+    id: last_transcript
+    name: Last Transcript
+    update_interval: never
+  - platform: template
+    id: last_response
+    name: Last Response
+    update_interval: never
+  - platform: wifi_info
+    ip_address:
+      name: IP Address

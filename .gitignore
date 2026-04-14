@@ -6,6 +6,8 @@ coverage/
 *.log
 .env*
 !.env.example
+docs/secrets.yaml
+docs/.esphome/
 
 # Gradle build cache
 .gradle/

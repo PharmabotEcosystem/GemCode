@@ -1,0 +1,205 @@
+substitutions:
+  name: gemcode-audio-test
+  friendly_name: GemCode Audio Test
+  wifi_ssid: !secret gemcode_wifi_ssid
+  wifi_password: !secret gemcode_wifi_password
+  api_encryption_key: !secret gemcode_api_encryption_key
+
+external_components:
+  - source:
+      type: git
+      url: https://github.com/esphome/home-assistant-voice-pe
+      ref: dev
+    components:
+      - voice_kit
+    refresh: 0s
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  name_add_mac_suffix: true
+  min_version: "2026.3.0"
+  on_boot:
+    priority: 350
+    then:
+      - switch.turn_on: internal_speaker_amp
+      - script.execute: show_blue
+      - delay: 2s
+      - script.execute: play_test_sound
+      - logger.log: "GemCode audio test avviato"
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  cpu_frequency: 240MHz
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+    version: recommended
+    sdkconfig_options:
+      CONFIG_ESP32S3_DATA_CACHE_64KB: "y"
+      CONFIG_ESP32S3_DATA_CACHE_LINE_64B: "y"
+      CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB: "y"
+      CONFIG_SPIRAM_RODATA: "y"
+      CONFIG_SPIRAM_FETCH_INSTRUCTIONS: "y"
+
+psram:
+  mode: octal
+  speed: 80MHz
+  ignore_not_found: false
+
+wifi:
+  ssid: ${wifi_ssid}
+  password: ${wifi_password}
+  ap:
+    ssid: "${friendly_name} Fallback"
+    password: "gemcode123"
+
+api:
+  encryption:
+    key: ${api_encryption_key}
+
+ota:
+  - platform: esphome
+
+logger:
+  level: DEBUG
+  hardware_uart: USB_SERIAL_JTAG
+
+web_server:
+  port: 80
+
+captive_portal:
+
+mdns:
+
+i2c:
+  - id: internal_i2c
+    sda: GPIO5
+    scl: GPIO6
+    frequency: 400kHz
+
+i2s_audio:
+  - id: i2s_output
+    i2s_lrclk_pin: GPIO7
+    i2s_bclk_pin: GPIO8
+
+audio_dac:
+  - platform: aic3204
+    id: aic3204_dac
+    i2c_id: internal_i2c
+
+speaker:
+  - platform: i2s_audio
+    id: i2s_audio_speaker
+    sample_rate: 48000
+    i2s_mode: secondary
+    i2s_dout_pin: GPIO10
+    bits_per_sample: 32bit
+    i2s_audio_id: i2s_output
+    dac_type: external
+    channel: stereo
+    timeout: never
+    buffer_duration: 100ms
+    audio_dac: aic3204_dac
+  - platform: resampler
+    id: announcement_speaker
+    output_speaker: i2s_audio_speaker
+    sample_rate: 48000
+    bits_per_sample: 16
+
+voice_kit:
+  id: voice_kit_component
+  i2c_id: internal_i2c
+  reset_pin: GPIO4
+  firmware:
+    url: https://github.com/esphome/voice-kit-xmos-firmware/releases/download/v1.3.1/ffva_v1.3.1_upgrade.bin
+    version: "1.3.1"
+    md5: 964635c5bf125529dab14a2472a15401
+
+media_player:
+  - platform: speaker
+    id: test_media_player
+    name: Test Media Player
+    announcement_pipeline:
+      speaker: announcement_speaker
+      format: FLAC
+      num_channels: 1
+      sample_rate: 48000
+    files:
+      - id: test_sound
+        file:
+          url: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/timer_finished.flac
+          type: web
+    volume_min: 0.4
+
+power_supply:
+  - id: led_power
+    pin: GPIO45
+
+switch:
+  - platform: gpio
+    pin: GPIO47
+    id: internal_speaker_amp
+    restore_mode: ALWAYS_ON
+    internal: true
+
+light:
+  - platform: esp32_rmt_led_strip
+    id: led_ring
+    name: LED Ring
+    pin: GPIO21
+    chipset: WS2812
+    num_leds: 12
+    rgb_order: grb
+    default_transition_length: 0ms
+    power_supply: led_power
+
+script:
+  - id: show_blue
+    then:
+      - light.turn_on:
+          id: led_ring
+          red: 0%
+          green: 0%
+          blue: 100%
+          brightness: 60%
+  - id: show_green
+    then:
+      - light.turn_on:
+          id: led_ring
+          red: 0%
+          green: 100%
+          blue: 15%
+          brightness: 60%
+  - id: play_test_sound
+    then:
+      - script.execute: show_green
+      - media_player.speaker.play_on_device_media_file:
+          media_file: test_sound
+          announcement: true
+          enqueue: false
+      - logger.log: "Riproduzione suono di test"
+
+binary_sensor:
+  - platform: gpio
+    pin:
+      number: GPIO0
+      inverted: true
+    id: center_button
+    name: Button
+    on_press:
+      then:
+        - script.execute: play_test_sound
+        - logger.log: "Button premuto: suono di test"
+
+button:
+  - platform: restart
+    name: Restart
+  - platform: factory_reset
+    name: Factory reset
+
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      name: IP Address
