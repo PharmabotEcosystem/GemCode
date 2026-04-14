@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import * as mammoth from 'mammoth/mammoth.browser';
 import {
   Sparkles,
   Plus,
@@ -26,13 +27,19 @@ import {
   Save,
   Boxes,
 } from 'lucide-react';
+import { Document as DocxDocument, Packer, Paragraph, TextRun } from 'docx';
+import { jsPDF } from 'jspdf';
 import { motion, AnimatePresence } from 'motion/react';
+import { GlobalWorkerOptions, getDocument } from 'pdfjs-dist';
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
 interface Message {
   id: string;
   role: 'user' | 'model';
   text: string;
   isStreaming?: boolean;
+  apiText?: string;
+  attachments?: ChatAttachment[];
 }
 
 interface Conversation {
@@ -59,6 +66,7 @@ interface VoiceBridgeSettings {
   temperature: number;
   max_response_sentences: number;
   max_response_chars: number;
+  tts_provider: string;
   tts_voice: string;
   device_id: string;
   device_name: string;
@@ -120,10 +128,46 @@ interface ModelOption {
   quantization?: string;
 }
 
+interface VoiceOption {
+  value: string;
+  label: string;
+  provider: string;
+}
+
+type AttachmentKind = 'image' | 'pdf' | 'docx' | 'text' | 'binary';
+
+interface ChatAttachment {
+  id: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  kind: AttachmentKind;
+  extractedText: string;
+  previewText: string;
+  imageDataUrl?: string;
+  error?: string;
+}
+
+type DraftFormat = 'txt' | 'md' | 'json' | 'js' | 'ts' | 'py' | 'html' | 'docx' | 'pdf';
+
+interface DraftFileOption {
+  value: DraftFormat;
+  label: string;
+  extension: string;
+  mimeType: string;
+  mode: 'text' | 'docx' | 'pdf';
+}
+
+interface DraftFileState {
+  fileName: string;
+  format: DraftFormat;
+  content: string;
+}
+
 const STORAGE_KEY = 'gemcode-web-settings-v2';
 
 const DEFAULT_SETTINGS: AppSettings = {
-  ollamaHost: 'http://localhost:8080',
+  ollamaHost: 'http://localhost:11434',
   ollamaModel: 'gemma4',
   temperature: 0.7,
   systemPrompt:
@@ -145,6 +189,7 @@ const DEFAULT_VOICE_BRIDGE_SETTINGS: VoiceBridgeSettings = {
   temperature: 0.2,
   max_response_sentences: 2,
   max_response_chars: 220,
+  tts_provider: 'edge-tts',
   tts_voice: 'it-IT-ElsaNeural',
   device_id: 'box3',
   device_name: 'Home Assistant Voice PE',
@@ -154,12 +199,57 @@ const DEFAULT_VOICE_BRIDGE_SETTINGS: VoiceBridgeSettings = {
   wake_word_notes: 'Per una vera wake word GEMMA serve un modello micro_wake_word dedicato.',
 };
 
+const TTS_PROVIDER_OPTIONS = [
+  { value: 'edge-tts', label: 'Edge TTS gratuito' },
+  { value: 'windows-sapi', label: 'Windows SAPI locale' },
+];
+
+const TTS_VOICE_OPTIONS: VoiceOption[] = [
+  { value: 'it-IT-ElsaNeural', label: 'Elsa Neural', provider: 'edge-tts' },
+  { value: 'it-IT-IsabellaNeural', label: 'Isabella Neural', provider: 'edge-tts' },
+  { value: 'Microsoft Elsa Desktop', label: 'Microsoft Elsa Desktop', provider: 'windows-sapi' },
+  { value: 'Microsoft Elsa', label: 'Microsoft Elsa', provider: 'windows-sapi' },
+];
+
 const SUGGESTION_CHIPS = [
   'Spiega come funziona un Transformer',
   'Scrivi un\'API REST in Kotlin con Ktor',
   'Cos\'e il pattern ReAct negli agenti AI?',
   'Crea uno script Python per analizzare un CSV',
 ];
+
+const TEXT_FILE_EXTENSIONS = new Set([
+  'txt', 'md', 'markdown', 'json', 'js', 'jsx', 'ts', 'tsx', 'py', 'kt', 'kts', 'java', 'xml', 'yaml', 'yml',
+  'csv', 'log', 'ini', 'cfg', 'conf', 'html', 'css', 'scss', 'sql', 'sh', 'ps1', 'bat', 'env', 'gitignore',
+]);
+
+const IMAGE_FILE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp']);
+
+const DRAFT_FILE_OPTIONS: DraftFileOption[] = [
+  { value: 'txt', label: 'Documento testo (.txt)', extension: 'txt', mimeType: 'text/plain;charset=utf-8', mode: 'text' },
+  { value: 'md', label: 'Documento markdown (.md)', extension: 'md', mimeType: 'text/markdown;charset=utf-8', mode: 'text' },
+  { value: 'json', label: 'JSON (.json)', extension: 'json', mimeType: 'application/json;charset=utf-8', mode: 'text' },
+  { value: 'js', label: 'JavaScript (.js)', extension: 'js', mimeType: 'text/javascript;charset=utf-8', mode: 'text' },
+  { value: 'ts', label: 'TypeScript (.ts)', extension: 'ts', mimeType: 'text/typescript;charset=utf-8', mode: 'text' },
+  { value: 'py', label: 'Python (.py)', extension: 'py', mimeType: 'text/x-python;charset=utf-8', mode: 'text' },
+  { value: 'html', label: 'HTML (.html)', extension: 'html', mimeType: 'text/html;charset=utf-8', mode: 'text' },
+  { value: 'docx', label: 'Documento Word (.docx)', extension: 'docx', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', mode: 'docx' },
+  { value: 'pdf', label: 'PDF (.pdf)', extension: 'pdf', mimeType: 'application/pdf', mode: 'pdf' },
+];
+
+const FILE_PICKER_ACCEPT = [
+  '.txt,.md,.markdown,.json,.js,.jsx,.ts,.tsx,.py,.kt,.kts,.java,.xml,.yaml,.yml,.csv,.log,.ini,.cfg,.conf,.html,.css,.scss,.sql,.sh,.ps1,.bat',
+  '.pdf,.docx,.doc',
+  '.png,.jpg,.jpeg,.webp,.gif,.bmp',
+].join(',');
+
+const DEFAULT_DRAFT_FILE: DraftFileState = {
+  fileName: 'gemcode-note.md',
+  format: 'md',
+  content: '# GemCode\n\nScrivi qui appunti, codice o documentazione.',
+};
+
+GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 function loadStoredSettings(): AppSettings {
   try {
@@ -171,10 +261,229 @@ function loadStoredSettings(): AppSettings {
   }
 }
 
+function getFileExtension(name: string): string {
+  const cleanName = name.toLowerCase().trim();
+  const lastDot = cleanName.lastIndexOf('.');
+  return lastDot >= 0 ? cleanName.slice(lastDot + 1) : '';
+}
+
+function formatBytes(size: number): string {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function stripDataUrlPrefix(dataUrl: string): string {
+  const commaIndex = dataUrl.indexOf(',');
+  return commaIndex >= 0 ? dataUrl.slice(commaIndex + 1) : dataUrl;
+}
+
+function ensureExtension(fileName: string, extension: string): string {
+  const trimmed = fileName.trim() || `gemcode-file.${extension}`;
+  return trimmed.toLowerCase().endsWith(`.${extension}`) ? trimmed : `${trimmed}.${extension}`;
+}
+
+function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ''));
+    reader.onerror = () => reject(reader.error ?? new Error(`Impossibile leggere ${file.name}`));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function extractPdfText(file: File): Promise<string> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const pdf = await getDocument({ data: bytes }).promise;
+  const pages: string[] = [];
+
+  for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+    const page = await pdf.getPage(pageNumber);
+    const content = await page.getTextContent();
+    const lines = content.items
+      .map(item => ('str' in item ? String(item.str) : ''))
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (lines) pages.push(lines);
+  }
+
+  return pages.join('\n\n').trim().slice(0, 12000);
+}
+
+async function extractDocxText(file: File): Promise<string> {
+  const result = await mammoth.extractRawText({ arrayBuffer: await file.arrayBuffer() });
+  return result.value.replace(/\n{3,}/g, '\n\n').trim().slice(0, 12000);
+}
+
+async function readAttachmentFile(file: File): Promise<ChatAttachment> {
+  const extension = getFileExtension(file.name);
+  const base: ChatAttachment = {
+    id: `${file.name}-${file.size}-${file.lastModified}`,
+    name: file.name,
+    mimeType: file.type || 'application/octet-stream',
+    size: file.size,
+    kind: 'binary',
+    extractedText: '',
+    previewText: '',
+  };
+
+  try {
+    if (file.type.startsWith('image/') || IMAGE_FILE_EXTENSIONS.has(extension)) {
+      const imageDataUrl = await fileToDataUrl(file);
+      return {
+        ...base,
+        kind: 'image',
+        imageDataUrl,
+        previewText: `Immagine ${file.name} · ${formatBytes(file.size)}`,
+      };
+    }
+
+    if (file.type === 'application/pdf' || extension === 'pdf') {
+      const extractedText = await extractPdfText(file);
+      return {
+        ...base,
+        kind: 'pdf',
+        extractedText,
+        previewText: extractedText || `PDF ${file.name} senza testo estraibile`,
+      };
+    }
+
+    if (
+      file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+      extension === 'docx'
+    ) {
+      const extractedText = await extractDocxText(file);
+      return {
+        ...base,
+        kind: 'docx',
+        extractedText,
+        previewText: extractedText || `DOCX ${file.name} senza testo estraibile`,
+      };
+    }
+
+    if (TEXT_FILE_EXTENSIONS.has(extension) || file.type.startsWith('text/')) {
+      const extractedText = (await file.text()).slice(0, 12000);
+      return {
+        ...base,
+        kind: 'text',
+        extractedText,
+        previewText: extractedText || `${file.name} vuoto`,
+      };
+    }
+
+    if (extension === 'doc') {
+      return {
+        ...base,
+        kind: 'binary',
+        previewText: `${file.name} e un DOC legacy. Converti in DOCX per estrarre il testo nel browser.`,
+        error: 'Formato DOC legacy non supportato direttamente dal browser.',
+      };
+    }
+
+    return {
+      ...base,
+      kind: 'binary',
+      previewText: `${file.name} importato come file binario (${formatBytes(file.size)}).`,
+      error: 'Il browser puo allegarlo solo come riferimento, non leggerne il contenuto.',
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      ...base,
+      previewText: `Errore lettura ${file.name}: ${message}`,
+      error: message,
+    };
+  }
+}
+
+function buildAttachmentPrompt(attachment: ChatAttachment): string {
+  const header = `File allegato: ${attachment.name} (${attachment.mimeType || 'n/d'}, ${formatBytes(attachment.size)})`;
+  if (attachment.kind === 'image') {
+    return `${header}\nTipo: immagine. Se il modello supporta input visivo usa anche l'immagine allegata; altrimenti ragiona solo sui metadati.`;
+  }
+  if (attachment.extractedText) {
+    return `${header}\nContenuto estratto:\n${attachment.extractedText}`;
+  }
+  if (attachment.error) {
+    return `${header}\nNota: ${attachment.error}`;
+  }
+  return `${header}\nNota: contenuto non disponibile.`;
+}
+
+function buildDisplayText(userText: string, attachments: ChatAttachment[]): string {
+  const lines: string[] = [];
+  if (attachments.length > 0) {
+    lines.push(`Allegati: ${attachments.map(attachment => attachment.name).join(', ')}`);
+  }
+  if (userText.trim()) {
+    lines.push(userText.trim());
+  }
+  return lines.join('\n');
+}
+
+function buildPromptText(userText: string, attachments: ChatAttachment[]): string {
+  const trimmed = userText.trim();
+  const blocks = attachments.map(buildAttachmentPrompt);
+  if (trimmed) blocks.push(`Richiesta utente:\n${trimmed}`);
+  return blocks.join('\n\n').trim();
+}
+
+function extractMessageImages(attachments?: ChatAttachment[]): string[] {
+  return (attachments ?? [])
+    .filter(attachment => attachment.imageDataUrl)
+    .map(attachment => stripDataUrlPrefix(attachment.imageDataUrl!));
+}
+
+async function buildDraftBlob(draft: DraftFileState): Promise<{ fileName: string; blob: Blob }> {
+  const option = DRAFT_FILE_OPTIONS.find(entry => entry.value === draft.format) ?? DRAFT_FILE_OPTIONS[0];
+  const fileName = ensureExtension(draft.fileName, option.extension);
+  const content = draft.content;
+
+  if (option.mode === 'docx') {
+    const paragraphs = content.split(/\r?\n/).map(line => new Paragraph({ children: [new TextRun(line)] }));
+    const doc = new DocxDocument({ sections: [{ children: paragraphs.length > 0 ? paragraphs : [new Paragraph('')] }] });
+    const blob = await Packer.toBlob(doc);
+    return { fileName, blob };
+  }
+
+  if (option.mode === 'pdf') {
+    const pdf = new jsPDF({ unit: 'pt', format: 'a4' });
+    const margin = 48;
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    const maxWidth = pageWidth - margin * 2;
+    const lines = pdf.splitTextToSize(content || ' ', maxWidth);
+    let cursorY = margin;
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(11);
+    lines.forEach((line: string) => {
+      if (cursorY > pageHeight - margin) {
+        pdf.addPage();
+        cursorY = margin;
+      }
+      pdf.text(line, margin, cursorY);
+      cursorY += 16;
+    });
+    return { fileName, blob: pdf.output('blob') };
+  }
+
+  return { fileName, blob: new Blob([content], { type: option.mimeType }) };
+}
+
+function triggerBlobDownload(fileName: string, blob: Blob): void {
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = objectUrl;
+  link.download = fileName;
+  link.click();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+}
+
 async function* ollamaStream(
   host: string,
   model: string,
-  messages: { role: string; content: string }[],
+  messages: { role: string; content: string; images?: string[] }[],
   temperature: number,
   signal: AbortSignal
 ): AsyncGenerator<string> {
@@ -322,9 +631,15 @@ export default function App() {
   const [voiceSettingsDirty, setVoiceSettingsDirty] = useState(false);
   const [voiceSettingsMessage, setVoiceSettingsMessage] = useState<string | null>(null);
   const [isSavingVoiceSettings, setIsSavingVoiceSettings] = useState(false);
+  const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([]);
+  const [workspaceFiles, setWorkspaceFiles] = useState<ChatAttachment[]>([]);
+  const [workspaceMessage, setWorkspaceMessage] = useState<string | null>(null);
+  const [isImportingFiles, setIsImportingFiles] = useState(false);
+  const [draftFile, setDraftFile] = useState<DraftFileState>(DEFAULT_DRAFT_FILE);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -415,6 +730,76 @@ export default function App() {
     setVoiceSettingsMessage(null);
   };
 
+  const availableTtsVoices = TTS_VOICE_OPTIONS.filter(option => option.provider === voiceBridgeSettings.tts_provider);
+
+  const openFilePicker = useCallback(() => {
+    fileInputRef.current?.click();
+  }, []);
+
+  const importFiles = useCallback(async (fileList: FileList | null) => {
+    if (!fileList || fileList.length === 0) return;
+
+    setIsImportingFiles(true);
+    setWorkspaceMessage(null);
+
+    try {
+      const parsed = await Promise.all(Array.from(fileList).map(file => readAttachmentFile(file)));
+      setPendingAttachments(prev => {
+        const known = new Set(prev.map(item => item.id));
+        const next = [...prev];
+        parsed.forEach(item => {
+          if (!known.has(item.id)) next.push(item);
+        });
+        return next;
+      });
+      setWorkspaceFiles(prev => {
+        const merged = [...parsed, ...prev.filter(existing => !parsed.some(item => item.id === existing.id))];
+        return merged.slice(0, 16);
+      });
+      const failed = parsed.filter(item => item.error).length;
+      setWorkspaceMessage(
+        failed > 0
+          ? `${parsed.length} file importati, ${failed} con limitazioni di lettura.`
+          : `${parsed.length} file importati nel toolkit e pronti per la chat.`
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setWorkspaceMessage(`Import fallito: ${msg}`);
+    } finally {
+      setIsImportingFiles(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  }, []);
+
+  const removeAttachment = useCallback((attachmentId: string) => {
+    setPendingAttachments(prev => prev.filter(item => item.id !== attachmentId));
+  }, []);
+
+  const enqueueWorkspaceFile = useCallback((attachmentId: string) => {
+    const candidate = workspaceFiles.find(item => item.id === attachmentId);
+    if (!candidate) return;
+    setPendingAttachments(prev => (prev.some(item => item.id === candidate.id) ? prev : [...prev, candidate]));
+    setWorkspaceMessage(`Aggiunto in chat: ${candidate.name}`);
+  }, [workspaceFiles]);
+
+  const copyWorkspaceText = useCallback(async (attachmentId: string) => {
+    const candidate = workspaceFiles.find(item => item.id === attachmentId);
+    if (!candidate?.extractedText) return;
+    await navigator.clipboard.writeText(candidate.extractedText);
+    setWorkspaceMessage(`Testo copiato: ${candidate.name}`);
+  }, [workspaceFiles]);
+
+  const exportDraft = useCallback(async () => {
+    try {
+      const { fileName, blob } = await buildDraftBlob(draftFile);
+      triggerBlobDownload(fileName, blob);
+      setWorkspaceMessage(`Creato file locale: ${fileName}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setWorkspaceMessage(`Creazione file fallita: ${msg}`);
+    }
+  }, [draftFile]);
+
   const reloadVoiceBridgeSettings = useCallback(async () => {
     setVoiceSettingsMessage(null);
     try {
@@ -488,13 +873,21 @@ export default function App() {
 
   const sendMessage = useCallback(async (text: string) => {
     const trimmed = text.trim();
-    if (!trimmed || isLoading) return;
+    const outgoingAttachments = [...pendingAttachments];
+    if ((!trimmed && outgoingAttachments.length === 0) || isLoading) return;
 
     setError(null);
     setInput('');
+    setPendingAttachments([]);
     if (inputRef.current) inputRef.current.style.height = 'auto';
 
-    const userMsg: Message = { id: `u-${Date.now()}`, role: 'user', text: trimmed };
+    const userMsg: Message = {
+      id: `u-${Date.now()}`,
+      role: 'user',
+      text: buildDisplayText(trimmed, outgoingAttachments),
+      apiText: buildPromptText(trimmed, outgoingAttachments),
+      attachments: outgoingAttachments,
+    };
     const modelId = `m-${Date.now()}`;
     const modelMsg: Message = { id: modelId, role: 'model', text: '', isStreaming: true };
 
@@ -507,7 +900,10 @@ export default function App() {
     try {
       const history = [...messages, userMsg].map(m => ({
         role: m.role === 'model' ? 'assistant' : 'user',
-        content: m.text,
+        content: m.role === 'user' ? m.apiText ?? m.text : m.text,
+        ...(m.role === 'user' && extractMessageImages(m.attachments).length > 0
+          ? { images: extractMessageImages(m.attachments) }
+          : {}),
       }));
 
       let gen: AsyncGenerator<string>;
@@ -535,7 +931,7 @@ export default function App() {
       setMessages(prev => prev.map(m => (m.id === modelId ? { ...m, isStreaming: false } : m)));
       abortRef.current = null;
     }
-  }, [isLoading, messages, settings]);
+  }, [isLoading, messages, pendingAttachments, settings]);
 
   const stopGeneration = () => {
     abortRef.current?.abort();
@@ -682,7 +1078,32 @@ export default function App() {
 
         <div className="shrink-0 px-4 pb-6 pt-2">
           <div className="max-w-3xl mx-auto">
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept={FILE_PICKER_ACCEPT}
+              onChange={e => {
+                void importFiles(e.target.files);
+              }}
+              className="hidden"
+            />
+            {pendingAttachments.length > 0 && (
+              <div className="mb-3 flex flex-wrap gap-2">
+                {pendingAttachments.map(attachment => (
+                  <AttachmentChip key={attachment.id} attachment={attachment} onRemove={removeAttachment} />
+                ))}
+              </div>
+            )}
             <div className="relative flex items-end gap-3 bg-elevated border border-border rounded-2xl px-4 py-3 focus-within:border-accent/50 transition-colors shadow-sm">
+              <button
+                onClick={openFilePicker}
+                disabled={isLoading || isImportingFiles}
+                className="p-2 rounded-xl border border-border text-secondary hover:text-primary hover:border-accent/40 disabled:opacity-40 transition-colors"
+                title="Allega immagini, PDF, DOCX o codice"
+              >
+                <FileText className="w-4 h-4" />
+              </button>
               <textarea
                 ref={inputRef}
                 value={input}
@@ -705,7 +1126,7 @@ export default function App() {
                 ) : (
                   <button
                     onClick={() => sendMessage(input)}
-                    disabled={!input.trim()}
+                    disabled={!input.trim() && pendingAttachments.length === 0}
                     className="p-2 rounded-xl bg-accent text-white hover:bg-accent-hover disabled:opacity-30 disabled:cursor-not-allowed transition-all"
                     title="Invia (Enter)"
                   >
@@ -713,6 +1134,21 @@ export default function App() {
                   </button>
                 )}
               </div>
+            </div>
+            <div className="mt-2 flex items-center justify-between gap-3 text-xs text-muted">
+              <span>
+                {isImportingFiles
+                  ? 'Import dei file in corso...'
+                  : pendingAttachments.length > 0
+                    ? `${pendingAttachments.length} allegati pronti per l'invio`
+                    : 'Chat testuale o multimodale con allegati locali'}
+              </span>
+              <button
+                onClick={openFilePicker}
+                className="text-accent hover:text-accent-hover transition-colors"
+              >
+                Apri file dal PC
+              </button>
             </div>
             <p className="text-center text-xs text-muted mt-2">
               GemCode · {activeBackendLabel} · Bridge voce {voiceBridgeStatus} · Dispositivo {voiceDeviceStatus?.status ?? 'unknown'}
@@ -764,7 +1200,7 @@ export default function App() {
                       label="Host LLM condiviso"
                       value={settings.ollamaHost}
                       onChange={value => setSettings(s => ({ ...s, ollamaHost: value }))}
-                      placeholder="http://localhost:8080"
+                      placeholder="http://localhost:11434"
                     />
                     <div>
                       <label className="text-xs text-muted mb-1.5 block">Modello condiviso</label>
@@ -845,6 +1281,93 @@ export default function App() {
                   />
                 </SettingsSection>
 
+                <SettingsSection icon={<FileText className="w-4 h-4" />} title="Toolkit file PC">
+                  <div className="space-y-3">
+                    <div className="flex gap-2">
+                      <button
+                        onClick={openFilePicker}
+                        disabled={isImportingFiles}
+                        className="flex-1 inline-flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl border border-border text-sm text-secondary hover:bg-elevated hover:text-primary disabled:opacity-40 transition-colors"
+                      >
+                        <FileText className="w-4 h-4" />
+                        {isImportingFiles ? 'Import...' : 'Leggi file locali'}
+                      </button>
+                      <button
+                        onClick={exportDraft}
+                        className="flex-1 inline-flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl bg-accent text-white transition-colors"
+                      >
+                        <Save className="w-4 h-4" />
+                        Crea file
+                      </button>
+                    </div>
+
+                    {workspaceMessage && (
+                      <div className="rounded-xl bg-accent/10 border border-accent/20 px-3 py-2 text-xs text-accent">
+                        {workspaceMessage}
+                      </div>
+                    )}
+
+                    <div className="rounded-2xl border border-border bg-elevated/30 p-4 space-y-3">
+                      <TextField
+                        label="Nome file"
+                        value={draftFile.fileName}
+                        onChange={value => setDraftFile(prev => ({ ...prev, fileName: value }))}
+                        placeholder="gemcode-note.md"
+                      />
+                      <div>
+                        <label className="text-xs text-muted mb-1.5 block">Formato output</label>
+                        <select
+                          value={draftFile.format}
+                          onChange={e => setDraftFile(prev => ({ ...prev, format: e.target.value as DraftFormat }))}
+                          className="w-full bg-elevated border border-border rounded-xl px-3 py-2 text-sm text-primary focus:border-accent/50 focus:outline-none transition-colors"
+                        >
+                          {DRAFT_FILE_OPTIONS.map(option => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-xs text-muted mb-1.5 block">Contenuto</label>
+                        <textarea
+                          value={draftFile.content}
+                          onChange={e => setDraftFile(prev => ({ ...prev, content: e.target.value }))}
+                          rows={8}
+                          className="w-full bg-elevated border border-border rounded-xl px-3 py-2.5 text-xs text-secondary focus:text-primary focus:border-accent/50 focus:outline-none resize-y leading-relaxed transition-colors"
+                        />
+                      </div>
+                      <p className="text-[11px] text-muted">
+                        Supporta esportazione locale di documenti, codice, DOCX e PDF direttamente dal browser.
+                      </p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-sm font-medium text-primary">File letti nel browser</p>
+                        <span className="text-xs text-muted">{workspaceFiles.length}</span>
+                      </div>
+                      {workspaceFiles.length === 0 ? (
+                        <div className="rounded-xl border border-border bg-elevated/40 px-3 py-3 text-sm text-secondary">
+                          Nessun file importato ancora. Usa "Leggi file locali" per immagini, PDF, DOCX o codice.
+                        </div>
+                      ) : (
+                        <div className="space-y-2 max-h-96 overflow-auto pr-1">
+                          {workspaceFiles.map(file => (
+                            <WorkspaceFileCard
+                              key={file.id}
+                              file={file}
+                              inChat={pendingAttachments.some(item => item.id === file.id)}
+                              onAddToChat={enqueueWorkspaceFile}
+                              onCopyText={copyWorkspaceText}
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </SettingsSection>
+
                 <SettingsSection icon={<Radio className="w-4 h-4" />} title="Bridge voce GemCode">
                   <div className="space-y-3">
                     <TextField
@@ -888,12 +1411,47 @@ export default function App() {
                       min={80}
                       max={500}
                     />
-                    <TextField
-                      label="Voce TTS"
-                      value={voiceBridgeSettings.tts_voice}
-                      onChange={value => updateVoiceBridgeSettings('tts_voice', value)}
-                      placeholder="it-IT-ElsaNeural"
-                    />
+                    <div>
+                      <label className="text-xs text-muted mb-1.5 block">Provider TTS</label>
+                      <select
+                        value={voiceBridgeSettings.tts_provider}
+                        onChange={e => {
+                          const nextProvider = e.target.value;
+                          const nextVoice = TTS_VOICE_OPTIONS.find(option => option.provider === nextProvider)?.value ?? voiceBridgeSettings.tts_voice;
+                          setVoiceBridgeSettings(prev => ({ ...prev, tts_provider: nextProvider, tts_voice: nextVoice }));
+                          setVoiceSettingsDirty(true);
+                          setVoiceSettingsMessage(null);
+                        }}
+                        className="w-full bg-elevated border border-border rounded-xl px-3 py-2 text-sm text-primary focus:border-accent/50 focus:outline-none transition-colors"
+                      >
+                        {TTS_PROVIDER_OPTIONS.map(option => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-xs text-muted mb-1.5 block">Voce TTS</label>
+                      <select
+                        value={voiceBridgeSettings.tts_voice}
+                        onChange={e => updateVoiceBridgeSettings('tts_voice', e.target.value)}
+                        className="w-full bg-elevated border border-border rounded-xl px-3 py-2 text-sm text-primary focus:border-accent/50 focus:outline-none transition-colors"
+                      >
+                        {availableTtsVoices.length === 0 ? (
+                          <option value={voiceBridgeSettings.tts_voice}>{voiceBridgeSettings.tts_voice}</option>
+                        ) : (
+                          availableTtsVoices.map(option => (
+                            <option key={`${option.provider}:${option.value}`} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))
+                        )}
+                      </select>
+                      <p className="mt-2 text-[11px] text-muted">
+                        Default ripristinato: Edge TTS gratuito con Elsa Neural. Sono esposte solo voci femminili; Windows SAPI resta disponibile come fallback locale.
+                      </p>
+                    </div>
                     <TextField
                       label="Nome dispositivo"
                       value={voiceBridgeSettings.device_name}
@@ -1039,6 +1597,103 @@ function MessageBubble({ message }: { message: Message; key?: string }) {
         )}
       </div>
     </motion.div>
+  );
+}
+
+function AttachmentChip({
+  attachment,
+  onRemove,
+}: {
+  key?: React.Key;
+  attachment: ChatAttachment;
+  onRemove: (attachmentId: string) => void;
+}) {
+  const tone = attachment.error
+    ? 'border-amber-400/30 bg-amber-400/10 text-amber-100'
+    : attachment.kind === 'image'
+      ? 'border-blue-400/30 bg-blue-400/10 text-blue-100'
+      : 'border-border bg-surface text-secondary';
+
+  return (
+    <div className={`inline-flex max-w-full items-center gap-2 rounded-full border px-3 py-1.5 text-xs ${tone}`}>
+      <span className="truncate max-w-52">{attachment.name}</span>
+      <span className="text-[10px] uppercase tracking-wide opacity-70">{attachment.kind}</span>
+      <button
+        onClick={() => onRemove(attachment.id)}
+        className="rounded-full p-0.5 hover:bg-white/10 transition-colors"
+        title={`Rimuovi ${attachment.name}`}
+      >
+        <X className="w-3 h-3" />
+      </button>
+    </div>
+  );
+}
+
+function WorkspaceFileCard({
+  file,
+  inChat,
+  onAddToChat,
+  onCopyText,
+}: {
+  key?: React.Key;
+  file: ChatAttachment;
+  inChat: boolean;
+  onAddToChat: (attachmentId: string) => void;
+  onCopyText: (attachmentId: string) => void;
+}) {
+  return (
+    <div className="rounded-2xl border border-border bg-elevated/30 p-3 space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-primary truncate">{file.name}</p>
+          <p className="text-xs text-muted">
+            {file.kind} · {formatBytes(file.size)}
+          </p>
+        </div>
+        <StatusBadge status={file.error ? 'checking' : 'ok'} label={file.error ? 'limitato' : 'ok'} />
+      </div>
+
+      {file.imageDataUrl ? (
+        <img
+          src={file.imageDataUrl}
+          alt={file.name}
+          className="w-full max-h-40 object-contain rounded-xl border border-border bg-surface"
+        />
+      ) : null}
+
+      <div className="rounded-xl border border-border/70 bg-surface px-3 py-2">
+        <p className="text-xs text-muted mb-1">Anteprima</p>
+        <p className="text-xs text-secondary whitespace-pre-wrap break-words line-clamp-6">
+          {file.previewText || 'Nessuna anteprima disponibile.'}
+        </p>
+      </div>
+
+      {file.error && (
+        <div className="rounded-xl bg-amber-500/10 border border-amber-500/20 px-3 py-2 text-xs text-amber-200">
+          {file.error}
+        </div>
+      )}
+
+      <div className="flex gap-2">
+        <button
+          onClick={() => onAddToChat(file.id)}
+          className="flex-1 inline-flex items-center justify-center gap-2 px-3 py-2 rounded-xl border border-border text-xs text-secondary hover:bg-elevated hover:text-primary transition-colors"
+        >
+          <Plus className="w-3.5 h-3.5" />
+          {inChat ? 'Gia in chat' : 'Aggiungi alla chat'}
+        </button>
+        <button
+          onClick={() => {
+            void onCopyText(file.id);
+          }}
+          disabled={!file.extractedText}
+          className="flex-1 inline-flex items-center justify-center gap-2 px-3 py-2 rounded-xl border border-border text-xs text-secondary hover:bg-elevated hover:text-primary disabled:opacity-30 transition-colors"
+        >
+          <Copy className="w-3.5 h-3.5" />
+          Copia testo
+        </button>
+      </div>
+    </div>
   );
 }
 

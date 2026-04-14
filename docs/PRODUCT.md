@@ -21,6 +21,21 @@ A self-contained AI agent that reasons, plans, and executes actions on an Androi
 - Foreground service with OOM-resistant process priority
 - MVI state machine for deterministic UI/state synchronization
 - Local Ollama-compatible HTTP server for browser/desktop access
+- `Gemma Live` in-app voice mode with animated live UI, Android microphone capture, speech-to-text handoff to Gemma, and spoken reply playback via Android TTS
+
+**Gemma Live runtime model:**
+- Scope: Android-only conversational layer for speaking to Gemma directly from the phone UI
+- Input: `SpeechRecognizer` from the device OS
+- Inference: existing Gemma request pipeline through `AgentViewModel.sendPrompt()`
+- Output: Android `TextToSpeech`
+- UX: push-to-speak, then think, then speak response with animated waveform background
+
+**Security and privacy notes for Gemma Live:**
+- The Gemma request/response path stays inside the existing app inference path.
+- Microphone access is gated by explicit runtime permission.
+- The feature does not add root, hidden IPC, or background recording.
+- STT/TTS privacy characteristics depend on the Android speech services installed on the device; they are not guaranteed to be fully offline on every phone.
+- The microphone session is user-initiated from the Live screen and can be interrupted explicitly.
 
 **Tool ecosystem (post-fix):**
 

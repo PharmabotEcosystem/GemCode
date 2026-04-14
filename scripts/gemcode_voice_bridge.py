@@ -1,4 +1,5 @@
 import asyncio
+import base64
 from collections import deque
 import io
 import json
@@ -12,10 +13,14 @@ import uuid
 import wave
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
 import aiohttp
 from aiohttp import web
-import edge_tts
+try:
+    import edge_tts
+except ImportError:
+    edge_tts = None
 from faster_whisper import WhisperModel
 
 from wyoming.asr import Transcribe, Transcript
@@ -27,6 +32,17 @@ from wyoming.tts import Synthesize
 
 DEFAULT_GEMCODE_AGENT_URL = "http://localhost:11434/api/chat"
 DEFAULT_GEMCODE_MODEL = "gemma4"
+DEFAULT_TTS_PROVIDER = "edge-tts"
+DEFAULT_WINDOWS_TTS_VOICE = "Microsoft Elsa Desktop"
+DEFAULT_EDGE_TTS_VOICE = "it-IT-ElsaNeural"
+ALLOWED_EDGE_TTS_VOICES = {
+    "it-IT-ElsaNeural",
+    "it-IT-IsabellaNeural",
+}
+ALLOWED_WINDOWS_TTS_VOICES = {
+    "Microsoft Elsa Desktop",
+    "Microsoft Elsa",
+}
 DEFAULT_GEMCODE_SYSTEM_PROMPT = (
     "Rispondi sempre in italiano colloquiale come assistente vocale locale di GemCode. "
     "Mantieni la risposta molto breve: massimo due frasi corte. "
@@ -164,7 +180,8 @@ class BridgeConfig:
     temperature: float = 0.2
     max_response_sentences: int = 2
     max_response_chars: int = 220
-    tts_voice: str = "it-IT-ElsaNeural"
+    tts_provider: str = DEFAULT_TTS_PROVIDER
+    tts_voice: str = DEFAULT_WINDOWS_TTS_VOICE if DEFAULT_TTS_PROVIDER == "windows-sapi" else DEFAULT_EDGE_TTS_VOICE
     device_id: str = "box3"
     device_name: str = "Home Assistant Voice PE"
     device_mode: str = "ptt"
@@ -174,6 +191,19 @@ class BridgeConfig:
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> "BridgeConfig":
+        tts_provider = str(data.get("tts_provider", DEFAULT_TTS_PROVIDER)).strip().lower()
+        tts_voice = str(
+            data.get(
+                "tts_voice",
+                DEFAULT_WINDOWS_TTS_VOICE if tts_provider == "windows-sapi" else DEFAULT_EDGE_TTS_VOICE,
+            )
+        )
+
+        if tts_provider == "windows-sapi" and tts_voice not in ALLOWED_WINDOWS_TTS_VOICES:
+            tts_voice = DEFAULT_WINDOWS_TTS_VOICE
+        elif tts_provider == "edge-tts" and tts_voice not in ALLOWED_EDGE_TTS_VOICES:
+            tts_voice = DEFAULT_EDGE_TTS_VOICE
+
         return cls(
             agent_url=str(data.get("agent_url", DEFAULT_GEMCODE_AGENT_URL)),
             model=str(data.get("model", DEFAULT_GEMCODE_MODEL)),
@@ -181,7 +211,8 @@ class BridgeConfig:
             temperature=float(data.get("temperature", 0.2)),
             max_response_sentences=max(1, int(data.get("max_response_sentences", 2))),
             max_response_chars=max(80, int(data.get("max_response_chars", 220))),
-            tts_voice=str(data.get("tts_voice", "it-IT-ElsaNeural")),
+            tts_provider=tts_provider,
+            tts_voice=tts_voice,
             device_id=str(data.get("device_id", "box3")),
             device_name=str(data.get("device_name", "Home Assistant Voice PE")),
             device_mode=str(data.get("device_mode", "ptt")),
@@ -198,6 +229,7 @@ class BridgeConfig:
             "temperature": self.temperature,
             "max_response_sentences": self.max_response_sentences,
             "max_response_chars": self.max_response_chars,
+            "tts_provider": self.tts_provider,
             "tts_voice": self.tts_voice,
             "device_id": self.device_id,
             "device_name": self.device_name,
@@ -577,21 +609,29 @@ def normalize_voice_text(text: str, max_sentences: int, max_chars: int) -> str:
     return cleaned
 
 
-async def query_gemcode(text: str) -> str:
-    config = bridge_config_store.config
+async def query_gemcode_with_options(
+    text: str,
+    *,
+    agent_url: str,
+    model: str,
+    system_prompt: str,
+    temperature: float,
+    max_sentences: int,
+    max_chars: int,
+) -> str:
     payload = {
-        "model": config.model,
+        "model": model,
         "messages": [
-            {"role": "system", "content": config.system_prompt},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": text},
         ],
         "stream": False,
-        "options": {"temperature": config.temperature},
+        "options": {"temperature": temperature},
     }
 
     async with aiohttp.ClientSession() as session:
         async with session.post(
-            config.agent_url,
+            agent_url,
             json=payload,
             timeout=aiohttp.ClientTimeout(total=90, sock_connect=15, sock_read=90),
         ) as response:
@@ -601,18 +641,129 @@ async def query_gemcode(text: str) -> str:
             data = await response.json()
             return normalize_voice_text(
                 data.get("message", {}).get("content", ""),
-                max_sentences=config.max_response_sentences,
-                max_chars=config.max_response_chars,
+                max_sentences=max_sentences,
+                max_chars=max_chars,
             )
+
+
+async def query_gemcode(text: str) -> str:
+    config = bridge_config_store.config
+    return await query_gemcode_with_options(
+        text,
+        agent_url=config.agent_url,
+        model=config.model,
+        system_prompt=config.system_prompt,
+        temperature=config.temperature,
+        max_sentences=config.max_response_sentences,
+        max_chars=config.max_response_chars,
+    )
+
+
+def transcribe_wav_bytes(wav_bytes: bytes, language: Optional[str] = None) -> str:
+    wav_io = io.BytesIO(wav_bytes)
+    whisper_language = (language or WHISPER_LANGUAGE or "").strip() or None
+    segments, _ = stt_model.transcribe(wav_io, language=whisper_language)
+    return " ".join(segment.text for segment in segments).strip()
+
+
+WINDOWS_SAPI_SCRIPT = """
+param(
+    [string]$Text,
+    [string]$Voice,
+    [string]$OutputPath
+)
+
+Add-Type -AssemblyName System.Speech
+$synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
+
+if ($Voice) {
+    try {
+        $synth.SelectVoice($Voice)
+    } catch {
+        $italianVoice = $synth.GetInstalledVoices() |
+            Where-Object { $_.VoiceInfo.Culture.Name -eq 'it-IT' } |
+            Select-Object -First 1
+        if ($italianVoice) {
+            $synth.SelectVoice($italianVoice.VoiceInfo.Name)
+        }
+    }
+}
+
+$synth.SetOutputToWaveFile($OutputPath)
+$synth.Speak($Text)
+$synth.Dispose()
+""".strip()
+
+
+async def synthesize_with_windows_sapi(text: str, voice: str, output_path: Path) -> None:
+    temp_script = VOICE_AUDIO_DIR / "windows_sapi_tts.ps1"
+    temp_script.write_text(WINDOWS_SAPI_SCRIPT, encoding="utf-8")
+
+    process = await asyncio.create_subprocess_exec(
+        "powershell",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(temp_script),
+        "-Text",
+        text or "Non ho una risposta.",
+        "-Voice",
+        voice,
+        "-OutputPath",
+        str(output_path),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await process.communicate()
+    if process.returncode != 0:
+        raise RuntimeError(f"Windows SAPI TTS fallito: {stderr.decode('utf-8', errors='ignore').strip()}")
+
+
+async def stream_wav_file(handler: AsyncEventHandler, audio_path: Path) -> None:
+    with wave.open(str(audio_path), "rb") as wav_file:
+        await handler.write_event(
+            AudioStart(
+                rate=wav_file.getframerate(),
+                width=wav_file.getsampwidth(),
+                channels=wav_file.getnchannels(),
+            ).event()
+        )
+
+        while True:
+            frames = wav_file.readframes(2048)
+            if not frames:
+                break
+            await handler.write_event(AudioChunk(audio=frames).event())
+
+    await handler.write_event(AudioStop().event())
+
+
+async def synthesize_text_to_audio(text: str, device_id: str, provider: str, voice: str) -> str:
+    provider = (provider or DEFAULT_TTS_PROVIDER).strip().lower()
+
+    if provider == "windows-sapi":
+        audio_name = f"{device_id}-{uuid.uuid4().hex}.wav"
+        output_path = VOICE_AUDIO_DIR / audio_name
+        await synthesize_with_windows_sapi(text, voice or DEFAULT_WINDOWS_TTS_VOICE, output_path)
+        return audio_name
+
+    if provider == "edge-tts":
+        if edge_tts is None:
+            raise RuntimeError("edge-tts non e installato e il provider TTS configurato non e disponibile")
+
+        audio_name = f"{device_id}-{uuid.uuid4().hex}.mp3"
+        output_path = VOICE_AUDIO_DIR / audio_name
+        communicate = edge_tts.Communicate(text or "Non ho una risposta.", voice or DEFAULT_EDGE_TTS_VOICE)
+        await communicate.save(str(output_path))
+        return audio_name
+
+    raise RuntimeError(f"Provider TTS non supportato: {provider}")
 
 
 async def synthesize_to_mp3(text: str, device_id: str) -> str:
     config = bridge_config_store.config
-    audio_name = f"{device_id}-{uuid.uuid4().hex}.mp3"
-    output_path = VOICE_AUDIO_DIR / audio_name
-    communicate = edge_tts.Communicate(text or "Non ho una risposta.", config.tts_voice)
-    await communicate.save(str(output_path))
-    return audio_name
+    return await synthesize_text_to_audio(text, device_id, config.tts_provider, config.tts_voice)
 
 
 async def process_voice_session(session: VoiceSession) -> None:
@@ -789,6 +940,110 @@ async def handle_settings(request: web.Request) -> web.Response:
     return web.json_response(updated.to_dict())
 
 
+async def handle_companion_transcribe(request: web.Request) -> web.Response:
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "JSON non valido"}, status=400)
+
+    if not isinstance(data, dict):
+        return web.json_response({"error": "Payload non valido"}, status=400)
+
+    audio_base64 = str(data.get("audio_base64", "")).strip()
+    language = str(data.get("language", "")).strip()
+    if not audio_base64:
+        return web.json_response({"error": "audio_base64 mancante"}, status=400)
+
+    try:
+        wav_bytes = base64.b64decode(audio_base64)
+    except ValueError:
+        return web.json_response({"error": "audio_base64 non valido"}, status=400)
+
+    try:
+        transcript = transcribe_wav_bytes(wav_bytes, language=language)
+    except Exception as exc:
+        logger.exception("Errore STT companion")
+        return web.json_response({"error": f"Trascrizione fallita: {exc}"}, status=500)
+
+    if not transcript:
+        return web.json_response({"transcript": "", "status": "empty"})
+
+    logger.info("Companion transcript: %s", transcript)
+    return web.json_response({"transcript": transcript, "status": "ok"})
+
+
+async def handle_companion_chat(request: web.Request) -> web.Response:
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "JSON non valido"}, status=400)
+
+    if not isinstance(data, dict):
+        return web.json_response({"error": "Payload non valido"}, status=400)
+
+    text = str(data.get("text", "")).strip()
+    if not text:
+        return web.json_response({"error": "text mancante"}, status=400)
+
+    config = bridge_config_store.config
+    agent_url = str(data.get("agent_url", config.agent_url)).strip() or config.agent_url
+    model = str(data.get("model", config.model)).strip() or config.model
+    system_prompt = str(data.get("system_prompt", config.system_prompt)).strip() or config.system_prompt
+    temperature = float(data.get("temperature", config.temperature))
+    max_sentences = max(1, int(data.get("max_response_sentences", config.max_response_sentences)))
+    max_chars = max(80, int(data.get("max_response_chars", config.max_response_chars)))
+    speak = bool(data.get("speak", True))
+    device_id = str(data.get("device_id", "desktop-companion")).strip() or "desktop-companion"
+    tts_provider = str(data.get("tts_provider", config.tts_provider)).strip().lower() or config.tts_provider
+    tts_voice = str(data.get("tts_voice", config.tts_voice)).strip() or config.tts_voice
+
+    try:
+        response_text = await query_gemcode_with_options(
+            text,
+            agent_url=agent_url,
+            model=model,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            max_sentences=max_sentences,
+            max_chars=max_chars,
+        )
+    except asyncio.TimeoutError:
+        return web.json_response({"error": "GemCode non ha risposto in tempo"}, status=504)
+    except Exception as exc:
+        logger.exception("Errore companion chat")
+        return web.json_response({"error": f"Chat fallita: {exc}"}, status=500)
+
+    audio_name = ""
+    audio_url = ""
+    if speak:
+        try:
+            audio_name = await synthesize_text_to_audio(response_text, device_id, tts_provider, tts_voice)
+            audio_url = f"http://{bridge_state.public_host}:{HTTP_PORT}/audio/{audio_name}"
+        except Exception as exc:
+            logger.exception("Errore TTS companion")
+            return web.json_response(
+                {
+                    "response_text": response_text,
+                    "audio_url": "",
+                    "audio_name": "",
+                    "warning": f"TTS fallito: {exc}",
+                },
+                status=200,
+            )
+
+    logger.info("Companion response: %s", response_text)
+    return web.json_response(
+        {
+            "status": "ok",
+            "response_text": response_text,
+            "audio_url": audio_url,
+            "audio_name": audio_name,
+            "tts_provider": tts_provider,
+            "tts_voice": tts_voice,
+        }
+    )
+
+
 async def handle_audio(request: web.Request) -> web.Response:
     audio_name = request.match_info["audio_name"]
     audio_path = VOICE_AUDIO_DIR / audio_name
@@ -814,6 +1069,8 @@ async def run_http_server() -> None:
     app = web.Application(middlewares=[cors_middleware])
     app.router.add_get("/health", handle_health)
     app.router.add_get("/api/bridge/health", handle_bridge_health)
+    app.router.add_post("/api/companion/chat", handle_companion_chat)
+    app.router.add_post("/api/companion/transcribe", handle_companion_transcribe)
     app.router.add_get("/api/voice/session", handle_voice_session)
     app.router.add_get("/api/device/ping", handle_device_ping)
     app.router.add_get("/api/device/status", handle_device_status)
@@ -908,8 +1165,22 @@ class GemCodeHandler(AsyncEventHandler):
 
     async def speak(self, text: str):
         logger.info(f"Generazione TTS: {text}")
-        communicate = edge_tts.Communicate(text, "it-IT-ElsaNeural")
+        config = bridge_config_store.config
 
+        if config.tts_provider == "windows-sapi":
+            audio_name = f"wyoming-{uuid.uuid4().hex}.wav"
+            output_path = VOICE_AUDIO_DIR / audio_name
+            await synthesize_with_windows_sapi(text, config.tts_voice, output_path)
+            try:
+                await stream_wav_file(self, output_path)
+            finally:
+                output_path.unlink(missing_ok=True)
+            return
+
+        if edge_tts is None:
+            raise RuntimeError("edge-tts non e installato e il provider TTS configurato non e disponibile")
+
+        communicate = edge_tts.Communicate(text, config.tts_voice)
         await self.write_event(AudioStart(rate=24000, width=2, channels=1).event())
         async for chunk in communicate.stream():
             if chunk["type"] == "audio":

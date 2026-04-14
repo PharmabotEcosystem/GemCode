@@ -3,6 +3,7 @@ substitutions:
   friendly_name: GemCode Wake Voice
   device_id: box3
   device_name: Home Assistant Voice PE
+  device_name_query: Home%20Assistant%20Voice%20PE
   wifi_ssid: !secret gemcode_wifi_ssid
   wifi_password: !secret gemcode_wifi_password
   bridge_host: !secret gemcode_bridge_host
@@ -10,7 +11,9 @@ substitutions:
   bridge_udp_audio_port: "10310"
   bridge_udp_control_port: "10311"
   wake_word_model: "hey_jarvis"
+  wake_word_model_query: "hey_jarvis"
   wake_word_label: "placeholder - serve un modello GEMMA dedicato"
+  wake_word_label_query: placeholder%20-%20serve%20un%20modello%20GEMMA%20dedicato
   wake_capture_ms: "5000"
   api_encryption_key: !secret gemcode_api_encryption_key
 
@@ -394,7 +397,7 @@ interval:
   - interval: 15s
     then:
       - http_request.get:
-          url: http://${bridge_host}:${bridge_http_port}/api/device/ping?device_id=${device_id}&device_name=${device_name}&firmware_mode=wake&wake_word_label=${wake_word_label}&wake_word_model=${wake_word_model}
+          url: http://${bridge_host}:${bridge_http_port}/api/device/ping?device_id=${device_id}&device_name=${device_name_query}&firmware_mode=wake&wake_word_label=${wake_word_label_query}&wake_word_model=${wake_word_model_query}
           on_error:
             then:
               - logger.log: "Heartbeat bridge non raggiungibile"

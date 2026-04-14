@@ -1,10 +1,11 @@
 {
   "agent_url": "http://localhost:11434/api/chat",
   "model": "gemma4",
-  "system_prompt": "Rispondi sempre in italiano colloquiale come assistente vocale locale di GemCode. Mantieni la risposta molto breve: massimo due frasi corte. Non usare markdown, elenchi, titoli, citazioni o spiegazioni metalinguistiche. Se l'input e' confuso, offensivo o sembra rumore, chiedi semplicemente di ripetere.",
-  "temperature": 0.2,
+  "system_prompt": "Sei GemCode Assistant, un assistente AI utile, preciso e conciso. Rispondi sempre in modo chiaro e diretto. Se non conosci qualcosa, dillo esplicitamente senza inventare.",
+  "temperature": 0.7,
   "max_response_sentences": 2,
   "max_response_chars": 220,
+  "tts_provider": "edge-tts",
   "tts_voice": "it-IT-ElsaNeural",
   "device_id": "box3",
   "device_name": "Home Assistant Voice PE",

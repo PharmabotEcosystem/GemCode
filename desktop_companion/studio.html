@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GemCode Companion Studio</title>
+  <link rel="stylesheet" href="./studio.css" />
+</head>
+<body>
+  <div class="studio-shell">
+    <aside class="studio-sidebar">
+      <div class="brand-block">
+        <div class="brand-mark">GC</div>
+        <div>
+          <h1>GemCode Companion Studio</h1>
+          <p>Profili, avatar, memoria, permessi e chat live</p>
+        </div>
+      </div>
+
+      <div class="top-actions">
+        <button id="focusWidgetButton" class="secondary-button">Mostra widget</button>
+        <button id="saveProfileButton" class="primary-button">Salva profilo</button>
+      </div>
+
+      <section class="sidebar-card">
+        <div class="section-head compact">
+          <div>
+            <h2>Profili</h2>
+            <p>Ogni persona ha avatar, memoria, prompt e permessi separati.</p>
+          </div>
+        </div>
+        <label>
+          Profilo attivo
+          <select id="profileSelect"></select>
+        </label>
+        <div class="button-row">
+          <button id="createProfileButton" class="secondary-button">Nuovo</button>
+          <button id="duplicateProfileButton" class="secondary-button">Duplica</button>
+          <button id="deleteProfileButton" class="danger-button">Elimina</button>
+        </div>
+        <div class="button-row">
+          <button id="importProfileButton" class="secondary-button">Importa JSON</button>
+          <button id="exportProfileButton" class="secondary-button">Esporta JSON</button>
+        </div>
+        <div id="profileMeta" class="meta-note"></div>
+      </section>
+
+      <section class="sidebar-card">
+        <h2>App e connessione</h2>
+        <label>
+          Bridge URL
+          <input id="bridgeUrl" type="text" />
+        </label>
+        <label>
+          Radice libreria avatar
+          <input id="avatarLibraryRoot" type="text" />
+        </label>
+        <div class="button-row">
+          <button id="pickAvatarRootButton" class="secondary-button">Scegli cartella</button>
+          <button id="saveAppButton" class="secondary-button">Salva app</button>
+        </div>
+      </section>
+
+      <section class="sidebar-card">
+        <h2>Widget</h2>
+        <label>
+          Larghezza
+          <input id="widgetWidth" type="range" min="360" max="900" step="10" />
+          <span id="widgetWidthValue" class="value-badge"></span>
+        </label>
+        <label>
+          Altezza
+          <input id="widgetHeight" type="range" min="420" max="1080" step="10" />
+          <span id="widgetHeightValue" class="value-badge"></span>
+        </label>
+        <label>
+          Scala
+          <input id="widgetScale" type="range" min="0.6" max="1.5" step="0.05" />
+          <span id="widgetScaleValue" class="value-badge"></span>
+        </label>
+        <label>
+          Opacita
+          <input id="widgetOpacity" type="range" min="0.35" max="1" step="0.05" />
+          <span id="widgetOpacityValue" class="value-badge"></span>
+        </label>
+        <label>
+          Colore accento
+          <input id="accentColor" type="color" />
+        </label>
+        <label class="checkbox-row">
+          <input id="alwaysOnTop" type="checkbox" />
+          <span>Sempre in primo piano</span>
+        </label>
+        <label class="checkbox-row">
+          <input id="clickThrough" type="checkbox" />
+          <span>Click-through</span>
+        </label>
+        <label class="checkbox-row">
+          <input id="showStatus" type="checkbox" />
+          <span>Mostra stato live</span>
+        </label>
+        <label class="checkbox-row">
+          <input id="showTranscript" type="checkbox" />
+          <span>Mostra transcript breve</span>
+        </label>
+      </section>
+
+      <section class="sidebar-card">
+        <h2>Voce e modelli</h2>
+        <label>
+          Agent URL
+          <input id="agentUrl" type="text" />
+        </label>
+        <label>
+          Modello
+          <input id="model" type="text" />
+        </label>
+        <label>
+          Temperatura
+          <input id="temperature" type="range" min="0" max="1.2" step="0.05" />
+          <span id="temperatureValue" class="value-badge"></span>
+        </label>
+        <label>
+          Provider TTS
+          <select id="ttsProvider">
+            <option value="edge-tts">Edge TTS gratuito</option>
+            <option value="windows-sapi">Windows SAPI locale</option>
+          </select>
+        </label>
+        <label>
+          Voce TTS
+          <input id="ttsVoice" type="text" />
+        </label>
+        <label>
+          Lingua STT
+          <input id="sttLanguage" type="text" placeholder="it" />
+        </label>
+        <label class="checkbox-row">
+          <input id="autoSpeak" type="checkbox" />
+          <span>Parla automaticamente le risposte</span>
+        </label>
+        <label class="checkbox-row">
+          <input id="autoSendVoice" type="checkbox" />
+          <span>Invia automaticamente dopo la trascrizione microfono</span>
+        </label>
+      </section>
+    </aside>
+
+    <main class="studio-main">
+      <section class="main-card summary-card">
+        <div class="section-head">
+          <div>
+            <h2>Identita del profilo</h2>
+            <p>Nome avatar, persona, relazione, interlocutore e dettagli di ruolo.</p>
+          </div>
+          <span id="profileBadge" class="library-badge">Profilo</span>
+        </div>
+        <div class="form-grid two-columns">
+          <label>
+            Nome profilo
+            <input id="profileName" type="text" />
+          </label>
+          <label>
+            Nome avatar
+            <input id="avatarName" type="text" />
+          </label>
+          <label>
+            Nome interlocutore
+            <input id="interlocutorName" type="text" />
+          </label>
+          <label>
+            Eta avatar
+            <input id="avatarAge" type="text" />
+          </label>
+          <label>
+            Eta interlocutore
+            <input id="interlocutorAge" type="text" />
+          </label>
+          <label>
+            Ruolo
+            <input id="identityRole" type="text" />
+          </label>
+          <label class="wide">
+            Relazione
+            <input id="relationship" type="text" />
+          </label>
+          <label class="wide">
+            Parole chiave stile
+            <input id="styleKeywords" type="text" />
+          </label>
+          <label class="wide">
+            Biografia
+            <textarea id="biography" rows="3"></textarea>
+          </label>
+          <label class="wide">
+            Note identita
+            <textarea id="identityNotes" rows="3"></textarea>
+          </label>
+        </div>
+      </section>
+
+      <section class="main-card prompt-card">
+        <div class="section-head">
+          <div>
+            <h2>Prompt, comportamento e memoria</h2>
+            <p>Ogni profilo ha istruzioni, stile conversazionale e memoria privata separate.</p>
+          </div>
+        </div>
+        <div class="form-grid two-columns">
+          <label class="wide">
+            System prompt base
+            <textarea id="systemPrompt" rows="6"></textarea>
+          </label>
+          <label>
+            Stile conversazione
+            <input id="conversationStyle" type="text" />
+          </label>
+          <label>
+            Iniziativa
+            <select id="initiative">
+              <option value="low">Bassa</option>
+              <option value="balanced">Bilanciata</option>
+              <option value="high">Alta</option>
+            </select>
+          </label>
+          <label>
+            Humor
+            <select id="humor">
+              <option value="low">Basso</option>
+              <option value="medium">Medio</option>
+              <option value="high">Alto</option>
+            </select>
+          </label>
+          <label>
+            Espressivita
+            <select id="expressiveness">
+              <option value="low">Bassa</option>
+              <option value="medium">Media</option>
+              <option value="high">Alta</option>
+            </select>
+          </label>
+          <label class="wide">
+            Tratti e stile comportamentale
+            <textarea id="behaviorTraits" rows="3"></textarea>
+          </label>
+          <label class="wide">
+            Boundaries
+            <textarea id="boundaries" rows="3"></textarea>
+          </label>
+          <label>
+            Greeting
+            <input id="greeting" type="text" />
+          </label>
+          <label>
+            Farewell
+            <input id="farewell" type="text" />
+          </label>
+          <label class="wide">
+            Memory summary
+            <textarea id="memorySummary" rows="3"></textarea>
+          </label>
+          <label class="wide">
+            Pinned notes
+            <textarea id="memoryPinnedNotes" rows="3"></textarea>
+          </label>
+          <label class="wide">
+            Known facts
+            <textarea id="memoryKnownFacts" rows="3"></textarea>
+          </label>
+          <label class="wide">
+            Note private
+            <textarea id="memoryPrivateNotes" rows="3"></textarea>
+          </label>
+        </div>
+      </section>
+
+      <section class="main-card permissions-card">
+        <div class="section-head">
+          <div>
+            <h2>Permessi e controlli</h2>
+            <p>Definisci quanto il profilo puo agire su PC, schermo, webcam, browser e file.</p>
+          </div>
+        </div>
+        <div class="form-grid permission-grid">
+          <label>
+            Controllo PC
+            <select id="permissionPcControl">
+              <option value="allow">Consenti</option>
+              <option value="ask">Chiedi</option>
+              <option value="deny">Nega</option>
+            </select>
+          </label>
+          <label>
+            Lettura schermo
+            <select id="permissionScreenRead">
+              <option value="allow">Consenti</option>
+              <option value="ask">Chiedi</option>
+              <option value="deny">Nega</option>
+            </select>
+          </label>
+          <label>
+            Webcam
+            <select id="permissionWebcam">
+              <option value="allow">Consenti</option>
+              <option value="ask">Chiedi</option>
+              <option value="deny">Nega</option>
+            </select>
+          </label>
+          <label>
+            Accesso file
+            <select id="permissionFileAccess">
+              <option value="allow">Consenti</option>
+              <option value="ask">Chiedi</option>
+              <option value="deny">Nega</option>
+            </select>
+          </label>
+          <label>
+            Browser automation
+            <select id="permissionBrowserAutomation">
+              <option value="allow">Consenti</option>
+              <option value="ask">Chiedi</option>
+              <option value="deny">Nega</option>
+            </select>
+          </label>
+          <label>
+            Microfono
+            <select id="permissionMicrophone">
+              <option value="allow">Consenti</option>
+              <option value="ask">Chiedi</option>
+              <option value="deny">Nega</option>
+            </select>
+          </label>
+          <label>
+            Notifiche
+            <select id="permissionNotifications">
+              <option value="allow">Consenti</option>
+              <option value="ask">Chiedi</option>
+              <option value="deny">Nega</option>
+            </select>
+          </label>
+        </div>
+      </section>
+
+      <section class="main-card avatar-card">
+        <div class="section-head">
+          <div>
+            <h2>Avatar bundle</h2>
+            <p>Carica layer locali PNG/WebP o un modello 3D per il profilo attivo.</p>
+          </div>
+        </div>
+        <div class="avatar-grid">
+          <div class="avatar-slot">
+            <span>Base</span>
+            <button data-avatar-kind="baseImage" class="secondary-button avatar-picker">Scegli file</button>
+            <code id="baseImagePath"></code>
+          </div>
+          <div class="avatar-slot">
+            <span>Blink</span>
+            <button data-avatar-kind="blinkImage" class="secondary-button avatar-picker">Scegli file</button>
+            <code id="blinkImagePath"></code>
+          </div>
+          <div class="avatar-slot">
+            <span>Mouth open</span>
+            <button data-avatar-kind="mouthOpenImage" class="secondary-button avatar-picker">Scegli file</button>
+            <code id="mouthOpenImagePath"></code>
+          </div>
+          <div class="avatar-slot">
+            <span>Aura</span>
+            <button data-avatar-kind="auraImage" class="secondary-button avatar-picker">Scegli file</button>
+            <code id="auraImagePath"></code>
+          </div>
+          <div class="avatar-slot">
+            <span>Modello 3D</span>
+            <button data-avatar-kind="primaryModel" class="secondary-button avatar-picker">Scegli file</button>
+            <code id="primaryModelPath"></code>
+          </div>
+        </div>
+      </section>
+
+      <section class="main-card avatar-library-card">
+        <div class="section-head">
+          <div>
+            <h2>Libreria personaggi da D:</h2>
+            <p>Scansione automatica per applicare rapidamente bundle gia presenti al profilo attivo.</p>
+          </div>
+          <div class="library-actions">
+            <button id="scanAvatarLibraryButton" class="primary-button">Scansiona</button>
+          </div>
+        </div>
+        <div class="library-headline">
+          <span id="avatarLibraryRootLabel"></span>
+          <span id="avatarLibraryCount"></span>
+        </div>
+        <div id="avatarLibraryResults" class="avatar-library-results"></div>
+      </section>
+
+      <section class="main-card chat-card">
+        <div class="section-head">
+          <div>
+            <h2>Chat live</h2>
+            <p>Tastiera o microfono, memoria recente persistita nel profilo attivo e sync diretto al widget.</p>
+          </div>
+          <div class="status-bar">
+            <span id="bridgeHealth">Bridge: check</span>
+            <span id="chatStatus">Idle</span>
+          </div>
+        </div>
+
+        <div id="chatLog" class="chat-log"></div>
+
+        <div class="memory-row">
+          <span>Messaggi recenti persistiti:</span>
+          <span id="recentMemoryCount">0</span>
+        </div>
+
+        <div class="voice-toolbar">
+          <button id="recordButton" class="secondary-button">Registra voce</button>
+          <span id="recordStatus">Microfono inattivo</span>
+        </div>
+
+        <div class="chat-composer">
+          <textarea id="chatInput" rows="3" placeholder="Scrivi qui o usa il microfono..."></textarea>
+          <button id="sendButton" class="primary-button">Invia</button>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="./studio.js"></script>
+</body>
+</html>

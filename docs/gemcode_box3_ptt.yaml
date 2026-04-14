@@ -3,6 +3,7 @@ substitutions:
   friendly_name: GemCode PTT Voice
   device_id: box3
   device_name: Home Assistant Voice PE
+  device_name_query: Home%20Assistant%20Voice%20PE
   wifi_ssid: !secret gemcode_wifi_ssid
   wifi_password: !secret gemcode_wifi_password
   bridge_host: !secret gemcode_bridge_host
@@ -334,7 +335,7 @@ interval:
   - interval: 15s
     then:
       - http_request.get:
-          url: http://${bridge_host}:${bridge_http_port}/api/device/ping?device_id=${device_id}&device_name=${device_name}&firmware_mode=ptt&wake_word_label=PTT&wake_word_model=manual_button
+          url: http://${bridge_host}:${bridge_http_port}/api/device/ping?device_id=${device_id}&device_name=${device_name_query}&firmware_mode=ptt&wake_word_label=PTT&wake_word_model=manual_button
           on_error:
             then:
               - logger.log: "Heartbeat bridge non raggiungibile"

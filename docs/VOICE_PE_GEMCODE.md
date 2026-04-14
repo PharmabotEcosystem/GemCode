@@ -10,7 +10,7 @@ Il flusso attuale consente al box di:
 - inviarlo al bridge locale via UDP
 - trascriverlo con Whisper locale
 - interrogare GemCode tramite endpoint `/api/chat` compatibile Ollama
-- sintetizzare la risposta con Edge TTS
+- sintetizzare la risposta con Edge TTS gratuito (default) oppure con Windows SAPI locale
 - scaricare e riprodurre l'audio sul box
 
 ## Architettura
@@ -22,7 +22,7 @@ Home Assistant Voice PE
 GemCode voice bridge (Python)
   -> Whisper tiny locale
   -> endpoint GemCode /api/chat
-  -> Edge TTS
+  -> Edge TTS gratuito di default
   -> HTTP 10301 per polling, stato dispositivo e audio
 GemCode Web UI
   -> http://localhost:3000
@@ -47,6 +47,8 @@ Per inizializzare il file locale:
 2. imposta SSID e password Wi-Fi
 3. imposta `gemcode_bridge_host` con l'IP LAN reale del PC che esegue il bridge
 4. imposta `gemcode_api_encryption_key` con la chiave API ESPHome che vuoi usare localmente
+
+Se usi `npm run quickstart:pc` su Windows, il bootstrap aggiorna da solo `gemcode_bridge_host` quando l'IP Wi-Fi del PC cambia. Se il box e collegato via USB, riflasha automaticamente anche il firmware PTT.
 
 ## Porte
 
@@ -150,8 +152,8 @@ Serve un endpoint locale compatibile Ollama su `/api/chat`.
 
 Opzioni tipiche:
 
-- Android Agent GemCode su `http://<ip-android>:8080`
-- backend locale su `http://localhost:11434/api/chat`
+- backend locale Ollama su `http://localhost:11434/api/chat` (default consigliato)
+- Android Agent GemCode su `http://<ip-android>:8080` come alternativa
 
 ### 2. Avvia il bridge voce
 
@@ -216,9 +218,19 @@ Nel pannello impostazioni di GemCode controlla:
 Il bridge usa moduli Python coerenti con gli import del repository:
 
 - `aiohttp`
-- `edge-tts`
+- `edge-tts` come default gratuito
 - `faster-whisper`
 - `wyoming`
+
+## Uso senza internet
+
+Per l'uso quotidiano offline, il percorso supportato e questo:
+
+- Whisper locale nel bridge
+- endpoint `/api/chat` locale o su LAN privata
+- Edge TTS gratuito come default, con scelta voce dal portale
+
+Restano non locali solo i download iniziali di componenti ESPHome o firmware, se non li vendorizzi nel repository.
 
 ## Note operative
 

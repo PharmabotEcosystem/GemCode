@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GemCode Companion Widget</title>
+  <link rel="stylesheet" href="./widget.css" />
+</head>
+<body>
+  <div class="drag-layer"></div>
+  <div id="widgetRoot" class="widget-shell idle">
+    <div class="aura-layer" id="auraLayer"></div>
+    <div id="avatarStage" class="avatar-stage default-avatar">
+      <div id="modelViewport" class="model-viewport" hidden></div>
+      <img id="avatarAura" class="avatar-image aura" alt="" hidden />
+      <img id="avatarBase" class="avatar-image base" alt="Avatar" hidden />
+      <img id="avatarBlink" class="avatar-image blink" alt="Blink" hidden />
+      <img id="avatarMouth" class="avatar-image mouth" alt="Mouth" hidden />
+
+      <div id="fallbackAvatar" class="fallback-avatar">
+        <div class="fallback-core"></div>
+        <div class="fallback-face">
+          <div class="eyes">
+            <span class="eye left"></span>
+            <span class="eye right"></span>
+          </div>
+          <span class="mouth"></span>
+        </div>
+      </div>
+    </div>
+
+    <div id="personaChip" class="persona-chip">Gemma Default</div>
+    <div id="statusChip" class="status-chip">Idle</div>
+    <div id="transcriptBubble" class="transcript-bubble" hidden></div>
+  </div>
+
+  <script type="module" src="./widget.js"></script>
+</body>
+</html>
