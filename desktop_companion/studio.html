@@ -46,6 +46,20 @@
       </section>
 
       <section class="sidebar-card">
+        <div class="section-head compact">
+          <div>
+            <h2>Preset Avatar VAM</h2>
+            <p>Seleziona rapidamente un preset avatar da scene VAM locali.</p>
+          </div>
+        </div>
+        <label>
+          Seleziona avatar
+          <select id="quickAvatarSelect" autofocus></select>
+        </label>
+        <div id="quickAvatarMeta" class="meta-note">Menu avatar non ancora caricato.</div>
+      </section>
+
+      <section class="sidebar-card">
         <h2>App e connessione</h2>
         <label>
           Bridge URL
@@ -345,10 +359,20 @@
         <div class="section-head">
           <div>
             <h2>Avatar bundle</h2>
-            <p>Carica layer locali PNG/WebP o un modello 3D per il profilo attivo.</p>
+            <p>File scena VAM, modello 3D e layer immagini per il profilo attivo.</p>
           </div>
         </div>
         <div class="avatar-grid">
+          <div class="avatar-slot">
+            <span>Scena VAM</span>
+            <button data-avatar-kind="sceneFile" class="secondary-button avatar-picker">Scegli file</button>
+            <code id="sceneFilePath"></code>
+          </div>
+          <div class="avatar-slot">
+            <span>Modello 3D</span>
+            <button data-avatar-kind="primaryModel" class="secondary-button avatar-picker">Scegli file</button>
+            <code id="primaryModelPath"></code>
+          </div>
           <div class="avatar-slot">
             <span>Base</span>
             <button data-avatar-kind="baseImage" class="secondary-button avatar-picker">Scegli file</button>
@@ -369,19 +393,14 @@
             <button data-avatar-kind="auraImage" class="secondary-button avatar-picker">Scegli file</button>
             <code id="auraImagePath"></code>
           </div>
-          <div class="avatar-slot">
-            <span>Modello 3D</span>
-            <button data-avatar-kind="primaryModel" class="secondary-button avatar-picker">Scegli file</button>
-            <code id="primaryModelPath"></code>
-          </div>
         </div>
       </section>
 
       <section class="main-card avatar-library-card">
         <div class="section-head">
           <div>
-            <h2>Libreria personaggi da D:</h2>
-            <p>Scansione automatica per applicare rapidamente bundle gia presenti al profilo attivo.</p>
+            <h2>Libreria Preset VAM</h2>
+            <p>Scansione automatica delle scene VAM con avatar Person per il profilo attivo.</p>
           </div>
           <div class="library-actions">
             <button id="scanAvatarLibraryButton" class="primary-button">Scansiona</button>

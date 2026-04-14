@@ -2,6 +2,7 @@ const state = {
   snapshot: null,
   recording: null,
   avatarLibrary: [],
+  quickAvatars: [],
   bridgeHealthTimer: null,
 };
 
@@ -24,6 +25,8 @@ function bindElements() {
     saveProfileButton: $('saveProfileButton'),
     saveAppButton: $('saveAppButton'),
     focusWidgetButton: $('focusWidgetButton'),
+    quickAvatarSelect: $('quickAvatarSelect'),
+    quickAvatarMeta: $('quickAvatarMeta'),
     bridgeUrl: $('bridgeUrl'),
     avatarLibraryRoot: $('avatarLibraryRoot'),
     avatarLibraryRootLabel: $('avatarLibraryRootLabel'),
@@ -88,6 +91,7 @@ function bindElements() {
     mouthOpenImagePath: $('mouthOpenImagePath'),
     auraImagePath: $('auraImagePath'),
     primaryModelPath: $('primaryModelPath'),
+    sceneFilePath: $('sceneFilePath'),
     bridgeHealth: $('bridgeHealth'),
     chatStatus: $('chatStatus'),
     chatLog: $('chatLog'),
@@ -222,6 +226,7 @@ function renderSnapshot(snapshot) {
   elements.mouthOpenImagePath.textContent = profile.avatar.mouthOpenImage || 'Lip-sync sintetico';
   elements.auraImagePath.textContent = profile.avatar.auraImage || 'Aura CSS';
   elements.primaryModelPath.textContent = profile.avatar.primaryModel || 'Nessun modello 3D';
+  elements.sceneFilePath.textContent = profile.avatar.sceneFile || 'Nessuna scena VAM';
 
   setSliderBadge(elements.temperature, elements.temperatureValue);
   setSliderBadge(elements.widgetWidth, elements.widgetWidthValue, ' px');
@@ -235,10 +240,10 @@ function renderSnapshot(snapshot) {
 function renderAvatarLibrary(items, rootPath) {
   state.avatarLibrary = items;
   elements.avatarLibraryRootLabel.textContent = rootPath;
-  elements.avatarLibraryCount.textContent = `${items.length} rilevati`;
+  elements.avatarLibraryCount.textContent = `${items.length} preset rilevati`;
 
   if (items.length === 0) {
-    elements.avatarLibraryResults.innerHTML = '<div class="empty-state">Nessun bundle avatar rilevato nella cartella scelta.</div>';
+    elements.avatarLibraryResults.innerHTML = '<div class="empty-state">Nessun preset VAM con avatar Person trovato nella cartella scelta.</div>';
     return;
   }
 
@@ -254,10 +259,10 @@ function renderAvatarLibrary(items, rootPath) {
               <h3>${escapeHtml(item.name)}</h3>
               <span class="library-badge">${escapeHtml(item.compatibility)}</span>
             </div>
-            <div class="library-meta">${item.imageCount} immagini · ${item.modelCount} modelli</div>
-            <div class="library-path">${escapeHtml(item.folderPath)}</div>
+            <div class="library-meta">${item.characterName ? `Personaggio: ${escapeHtml(item.characterName)}` : 'Personaggio non specificato'}</div>
+            <div class="library-path">${escapeHtml(item.sceneFile)}</div>
             <div class="library-controls">
-              <button class="secondary-button apply-avatar-button" data-index="${index}">Usa bundle</button>
+              <button class="secondary-button apply-avatar-button" data-index="${index}">Usa preset</button>
             </div>
           </div>
         </article>
@@ -272,6 +277,39 @@ function renderAvatarLibrary(items, rootPath) {
       void applyAvatarBundle(item);
     });
   });
+}
+
+function findCurrentQuickAvatarValue(profile) {
+  if (!profile) return '';
+  return state.quickAvatars.find(item => {
+    return Boolean(profile.avatar.sceneFile) && profile.avatar.sceneFile === item.sceneFile;
+  })?.sceneFile || '';
+}
+
+function renderQuickAvatarMenu(items) {
+  state.quickAvatars = Array.isArray(items) ? items : [];
+  if (!state.quickAvatars.length) {
+    elements.quickAvatarSelect.innerHTML = '<option value="">Nessun preset VAM disponibile</option>';
+    elements.quickAvatarSelect.disabled = true;
+    elements.quickAvatarMeta.textContent = 'Nessuna scena VAM con Person trovata.';
+    return;
+  }
+
+  elements.quickAvatarSelect.disabled = false;
+  elements.quickAvatarSelect.innerHTML = state.quickAvatars
+    .map(item => `<option value="${escapeHtml(item.sceneFile)}">${escapeHtml(item.name)}${item.characterName ? ` (${escapeHtml(item.characterName)})` : ''}</option>`)
+    .join('');
+
+  const profile = activeProfile();
+  const currentValue = findCurrentQuickAvatarValue(profile);
+  if (currentValue) {
+    elements.quickAvatarSelect.value = currentValue;
+  }
+
+  const currentItem = state.quickAvatars.find(item => item.sceneFile === elements.quickAvatarSelect.value) || state.quickAvatars[0];
+  elements.quickAvatarMeta.textContent = currentItem
+    ? `${currentItem.name}${currentItem.characterName ? ` · ${currentItem.characterName}` : ''} · ${currentItem.compatibility}`
+    : 'Seleziona un preset avatar.';
 }
 
 function collectAppSettingsFromForm() {
@@ -418,6 +456,8 @@ function buildCompositeSystemPrompt(profile) {
     `Permessi:\n${permissions}`,
     memoryParts ? `Memoria privata:\n${memoryParts}` : '',
     recentMessages ? `Contesto recente:\n${recentMessages}` : '',
+    'Espressioni: Inserisci UNA tra [neutral] [smile] [sad] [angry] [surprised] [flirty] nella risposta per indicare il tuo stato emotivo.',
+    'Gesti: Puoi inserire {action:nome} per un gesto. Gesti validi: nod, shake_head, tilt_head, lean_in, deep_breath, look_away, shrug.',
     'Rispondi in italiano, con naturalezza, senza diventare prolissa. Se un permesso e negato o solo su richiesta, dichiaralo con chiarezza.',
   ]
     .filter(Boolean)
@@ -435,6 +475,19 @@ async function persistRecentMessages(messages) {
   merged.memory.recentMessages = messages.slice(-24);
   const snapshot = await window.gemcodeCompanion.updateProfile(profile.id, merged);
   renderSnapshot(snapshot);
+}
+
+function parseEmotionAndGestures(text) {
+  const emotionMatch = text.match(/\[(neutral|smile|sad|angry|surprised|flirty)\]/i);
+  const emotion = emotionMatch ? emotionMatch[1].toLowerCase() : null;
+  const gestureMatches = text.match(/\{action\s*:\s*(\w+)\}/g) || [];
+  const gestures = gestureMatches.map(m => m.match(/\{action\s*:\s*(\w+)\}/)[1]);
+  const cleanText = text
+    .replace(/\[(neutral|smile|sad|angry|surprised|flirty)\]/gi, '')
+    .replace(/\{action\s*:\s*\w+\}/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  return { cleanText, emotion, gestures };
 }
 
 function concatenateFloat32(chunks) {
@@ -606,13 +659,18 @@ async function sendChat(text, fromVoice = false) {
     }),
   });
   const payload = await response.json();
-  const responseText = payload.response_text || payload.error || 'Nessuna risposta';
+  const rawResponse = payload.response_text || payload.error || 'Nessuna risposta';
+  const parsed = parseEmotionAndGestures(rawResponse);
+  const responseText = parsed.cleanText || rawResponse;
   const nextMessages = [...pendingMessages, { role: 'assistant', text: responseText, ts: new Date().toISOString() }].slice(-24);
 
   renderChatLog(nextMessages);
   await persistRecentMessages(nextMessages);
 
-  updateWidgetLiveState({ phase: payload.audio_url ? 'speaking' : 'idle', transcript: cleanText, responseText });
+  const liveState = { phase: payload.audio_url ? 'speaking' : 'idle', transcript: cleanText, responseText };
+  if (parsed.emotion) liveState.emotion = parsed.emotion;
+  if (parsed.gestures.length > 0) liveState.gesture = parsed.gestures[0];
+  updateWidgetLiveState(liveState);
   setChatStatus(payload.audio_url ? 'Speaking' : 'Idle');
 
   if (payload.audio_url) {
@@ -646,24 +704,37 @@ async function assignAvatarFile(kind) {
 async function applyAvatarBundle(item) {
   const profile = activeProfile();
   if (!profile) return;
-  if (!requirePermission(profile.permissions?.fileAccess, 'Applicazione bundle avatar')) return;
+  if (!requirePermission(profile.permissions?.fileAccess, 'Applicazione preset avatar')) return;
+  const avatarUpdate = {
+    ...profile.avatar,
+    name: item.name,
+  };
+  if (item.sceneFile) {
+    avatarUpdate.sceneFile = item.sceneFile;
+  }
+  if (item.baseImage !== undefined) avatarUpdate.baseImage = item.baseImage;
+  if (item.blinkImage !== undefined) avatarUpdate.blinkImage = item.blinkImage;
+  if (item.mouthOpenImage !== undefined) avatarUpdate.mouthOpenImage = item.mouthOpenImage;
+  if (item.auraImage !== undefined) avatarUpdate.auraImage = item.auraImage;
+  if (item.primaryModel !== undefined) avatarUpdate.primaryModel = item.primaryModel;
   const snapshot = await window.gemcodeCompanion.updateProfile(profile.id, {
     name: elements.profileName.value.trim() || profile.name,
     identity: {
       ...profile.identity,
       avatarName: elements.avatarName.value.trim() || item.name,
     },
-    avatar: {
-      ...profile.avatar,
-      name: item.name,
-      baseImage: item.baseImage,
-      blinkImage: item.blinkImage,
-      mouthOpenImage: item.mouthOpenImage,
-      auraImage: item.auraImage,
-      primaryModel: item.primaryModel,
-    },
+    avatar: avatarUpdate,
   });
   renderSnapshot(snapshot);
+  renderQuickAvatarMenu(state.quickAvatars);
+}
+
+async function applyQuickAvatarSelection() {
+  const selected = state.quickAvatars.find(item => item.sceneFile === elements.quickAvatarSelect.value);
+  if (!selected) return;
+  elements.quickAvatarMeta.textContent = `${selected.name}${selected.characterName ? ` · ${selected.characterName}` : ''} · ${selected.compatibility}`;
+  await applyAvatarBundle(selected);
+  setChatStatus(`Preset applicato: ${selected.name}`);
 }
 
 async function scanAvatarLibrary(rootOverride) {
@@ -672,6 +743,11 @@ async function scanAvatarLibrary(rootOverride) {
   const targetRoot = rootOverride || elements.avatarLibraryRoot.value.trim() || elements.avatarLibraryRootLabel.textContent || 'D:\\';
   const payload = await window.gemcodeCompanion.scanAvatarLibrary(targetRoot);
   renderAvatarLibrary(payload.items || [], payload.rootPath || targetRoot);
+}
+
+async function loadQuickAvatarMenu() {
+  const payload = await window.gemcodeCompanion.listQuickVamAvatars();
+  renderQuickAvatarMenu(payload.items || []);
 }
 
 async function refreshBridgeHealth() {
@@ -696,6 +772,9 @@ function bindEvents() {
   elements.focusWidgetButton.addEventListener('click', () => window.gemcodeCompanion.focusWidget());
   elements.saveAppButton.addEventListener('click', () => void saveAppSettings());
   elements.saveProfileButton.addEventListener('click', () => void saveProfile());
+  elements.quickAvatarSelect.addEventListener('change', () => {
+    void applyQuickAvatarSelection();
+  });
 
   elements.profileSelect.addEventListener('change', async () => {
     const snapshot = await window.gemcodeCompanion.setActiveProfile(elements.profileSelect.value);
@@ -787,10 +866,14 @@ async function init() {
   bindElements();
   bindEvents();
   renderSnapshot(await window.gemcodeCompanion.getSettings());
+  await loadQuickAvatarMenu();
   await scanAvatarLibrary(state.snapshot?.app?.avatarLibraryRoot);
   await refreshBridgeHealth();
   state.bridgeHealthTimer = window.setInterval(refreshBridgeHealth, 10000);
-  window.gemcodeCompanion.onSettingsUpdated(renderSnapshot);
+  window.gemcodeCompanion.onSettingsUpdated(snapshot => {
+    renderSnapshot(snapshot);
+    renderQuickAvatarMenu(state.quickAvatars);
+  });
 }
 
 init().catch(error => {

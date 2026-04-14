@@ -1,5 +1,4 @@
 const { app, BrowserWindow, dialog, ipcMain, screen } = require('electron');
-const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
@@ -21,21 +20,22 @@ const DEFAULT_WIDGET_SETTINGS = {
 };
 
 const DEFAULT_AVATAR_SETTINGS = {
-  name: 'Gemma',
+  name: 'Lana',
   baseImage: '',
   blinkImage: '',
   mouthOpenImage: '',
   auraImage: '',
-  primaryModel: '',
+  primaryModel: 'D:\\Avatar3D\\j.obj',
+  sceneFile: 'D:\\Saves\\scene\\SPQR\\lana.json',
   idleAnimation: 'breathe',
 };
 
 const DEFAULT_PROFILE = {
-  id: 'profile-gemma-default',
-  name: 'Gemma Default',
-  slug: 'gemma-default',
+  id: 'profile-default',
+  name: 'Lana',
+  slug: 'lana',
   identity: {
-    avatarName: 'Gemma',
+    avatarName: 'Lana',
     interlocutorName: 'Tu',
     avatarAge: '26',
     interlocutorAge: '',
@@ -101,7 +101,7 @@ const DEFAULT_PROFILE = {
 
 const DEFAULT_STORE = {
   schemaVersion: STORE_SCHEMA_VERSION,
-  avatarLibraryRoot: 'D:\\',
+  avatarLibraryRoot: 'D:\\Saves\\scene',
   bridgeUrl: 'http://localhost:10301',
   activeProfileId: DEFAULT_PROFILE.id,
   profiles: [DEFAULT_PROFILE],
@@ -109,6 +109,10 @@ const DEFAULT_STORE = {
 
 const IMAGE_EXTENSIONS = new Set(['.png', '.webp', '.jpg', '.jpeg']);
 const MODEL_EXTENSIONS = new Set(['.vrm', '.glb', '.gltf', '.fbx', '.obj']);
+const VAM_SCENE_ROOTS = [
+  'D:\\Saves\\scene',
+  'D:\\Saves\\Person',
+];
 const SKIP_FOLDERS = new Set([
   '$RECYCLE.BIN',
   'System Volume Information',
@@ -299,6 +303,10 @@ function ensureWidgetPosition(profile = getActiveProfile()) {
   if (typeof profile.widget.y !== 'number') {
     profile.widget.y = bounds.y + Math.max(36, Math.round((bounds.height - profile.widget.height) * 0.32));
   }
+  const maxX = bounds.x + Math.max(0, bounds.width - profile.widget.width);
+  const maxY = bounds.y + Math.max(0, bounds.height - profile.widget.height);
+  profile.widget.x = Math.min(Math.max(profile.widget.x, bounds.x), maxX);
+  profile.widget.y = Math.min(Math.max(profile.widget.y, bounds.y), maxY);
 }
 
 function buildRuntimeSettings(profile = getActiveProfile()) {
@@ -461,22 +469,6 @@ function normalizeFilePath(filePath) {
   return `file:///${encodeURI(normalized)}`;
 }
 
-function runPythonAvatarLibraryScan(rootPath) {
-  const scriptPath = path.join(__dirname, '..', 'scripts', 'gemcode_avatar_library_builder.py');
-  const cacheDir = path.join(app.getPath('userData'), 'avatar-library-cache');
-  const result = spawnSync(
-    'python',
-    [scriptPath, '--root', rootPath, '--cache-dir', cacheDir, '--max-depth', '4', '--max-results', '300'],
-    { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 }
-  );
-
-  if (result.status !== 0) {
-    throw new Error(result.stderr?.trim() || `Scanner Python fallito con exit code ${result.status}`);
-  }
-
-  return JSON.parse(result.stdout || '{"rootPath":"","items":[]}');
-}
-
 function safeReaddir(dirPath) {
   try {
     return fs.readdirSync(dirPath, { withFileTypes: true });
@@ -485,72 +477,63 @@ function safeReaddir(dirPath) {
   }
 }
 
-function scoreAsset(fileName, candidates) {
-  const lower = fileName.toLowerCase();
-  let score = 0;
-  for (const candidate of candidates) {
-    if (lower.includes(candidate)) score += 2;
-  }
-  if (lower.includes('transparent')) score += 1;
-  if (lower.includes('4k') || lower.includes('8k')) score += 1;
-  if (lower.includes('preview') || lower.includes('thumb')) score -= 2;
-  return score;
-}
+function parseVamSceneFile(filePath) {
+  try {
+    const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    if (!raw.atoms || !Array.isArray(raw.atoms)) return null;
 
-function pickBestImage(files, keywords) {
-  const scored = files
-    .map(filePath => ({ filePath, score: scoreAsset(path.basename(filePath), keywords) }))
-    .sort((left, right) => right.score - left.score || left.filePath.localeCompare(right.filePath));
-  return scored[0]?.filePath || '';
-}
+    const personAtom = raw.atoms.find(a => a.type === 'Person');
+    if (!personAtom) return null;
 
-function detectAvatarBundle(folderPath, imageFiles, modelFiles) {
-  if (imageFiles.length === 0 && modelFiles.length === 0) {
+    let characterName = '';
+    if (Array.isArray(personAtom.storables)) {
+      const geometry = personAtom.storables.find(s => s.id === 'geometry');
+      if (geometry) {
+        characterName = geometry.character || '';
+      }
+    }
+
+    const dir = path.dirname(filePath);
+    const baseName = path.basename(filePath, '.json');
+
+    let previewImage = '';
+    for (const ext of ['.jpg', '.png', '.webp']) {
+      const imgPath = path.join(dir, baseName + ext);
+      if (fs.existsSync(imgPath)) {
+        previewImage = imgPath;
+        break;
+      }
+    }
+
+    return {
+      name: baseName,
+      sceneFile: filePath,
+      folderPath: dir,
+      previewImage,
+      characterName,
+      personAtomId: personAtom.id || 'Person',
+      compatibility: 'vam-scene',
+    };
+  } catch {
     return null;
   }
-
-  const baseImage = pickBestImage(imageFiles, ['base', 'body', 'main', 'idle', 'render', 'portrait', 'full']);
-  const blinkImage = pickBestImage(imageFiles, ['blink', 'closed', 'eyes', 'eyeclose']);
-  const mouthOpenImage = pickBestImage(imageFiles, ['mouth', 'open', 'talk', 'speak', 'viseme', 'lip']);
-  const auraImage = pickBestImage(imageFiles, ['aura', 'glow', 'fx', 'effect']);
-  const previewImage = baseImage || imageFiles[0] || '';
-  const primaryModel = modelFiles[0] || '';
-
-  if (!baseImage && !primaryModel) {
-    return null;
-  }
-
-  return {
-    name: path.basename(folderPath),
-    folderPath,
-    previewImage,
-    baseImage,
-    blinkImage,
-    mouthOpenImage,
-    auraImage,
-    primaryModel,
-    imageCount: imageFiles.length,
-    modelCount: modelFiles.length,
-    compatibility: baseImage ? 'ready-2d' : 'model-only',
-  };
 }
 
-function scanAvatarLibrary(rootPath, maxDepth = 4) {
+function scanVamPresets(rootPath, maxDepth = 4) {
   const results = [];
   const queue = [{ dirPath: rootPath, depth: 0 }];
   const visited = new Set();
 
-  while (queue.length > 0 && results.length < 300) {
+  while (queue.length > 0) {
     const current = queue.shift();
     if (!current || visited.has(current.dirPath)) continue;
     visited.add(current.dirPath);
 
     const entries = safeReaddir(current.dirPath);
-    const imageFiles = [];
-    const modelFiles = [];
 
     for (const entry of entries) {
       const fullPath = path.join(current.dirPath, entry.name);
+
       if (entry.isDirectory()) {
         if (current.depth < maxDepth && !SKIP_FOLDERS.has(entry.name)) {
           queue.push({ dirPath: fullPath, depth: current.depth + 1 });
@@ -558,21 +541,30 @@ function scanAvatarLibrary(rootPath, maxDepth = 4) {
         continue;
       }
 
-      const extension = path.extname(entry.name).toLowerCase();
-      if (IMAGE_EXTENSIONS.has(extension)) {
-        imageFiles.push(fullPath);
-      } else if (MODEL_EXTENSIONS.has(extension)) {
-        modelFiles.push(fullPath);
-      }
-    }
+      if (path.extname(entry.name).toLowerCase() !== '.json') continue;
 
-    const bundle = detectAvatarBundle(current.dirPath, imageFiles, modelFiles);
-    if (bundle) {
-      results.push(bundle);
+      const preset = parseVamSceneFile(fullPath);
+      if (preset) {
+        results.push(preset);
+      }
     }
   }
 
-  return results.sort((left, right) => left.name.localeCompare(right.name));
+  return results.sort((a, b) => a.name.localeCompare(b.name)).slice(0, 100);
+}
+
+function getQuickVamPresets() {
+  const results = [];
+  for (const rootDir of VAM_SCENE_ROOTS) {
+    if (!fs.existsSync(rootDir)) continue;
+    results.push(...scanVamPresets(rootDir, 2));
+  }
+  const seen = new Set();
+  return results.filter(item => {
+    if (seen.has(item.sceneFile)) return false;
+    seen.add(item.sceneFile);
+    return true;
+  });
 }
 
 function updateProfile(profileId, partial) {
@@ -622,12 +614,10 @@ app.whenReady().then(() => {
   app.setAppUserModelId(APP_ID);
   store = loadSettings();
   createWidgetWindow();
-  createStudioWindow();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWidgetWindow();
-      createStudioWindow();
     }
   });
 });
@@ -780,15 +770,23 @@ ipcMain.handle('companion:import-profile', async () => {
 });
 
 ipcMain.handle('companion:pick-avatar-file', async (_event, kind) => {
-  const filters = kind === 'primaryModel'
-    ? [
-        { name: 'Modelli 3D', extensions: ['vrm', 'glb', 'gltf', 'fbx', 'obj'] },
-        { name: 'Tutti i file', extensions: ['*'] },
-      ]
-    : [
-        { name: 'Immagini', extensions: ['png', 'webp', 'jpg', 'jpeg'] },
-        { name: 'Tutti i file', extensions: ['*'] },
-      ];
+  let filters;
+  if (kind === 'primaryModel') {
+    filters = [
+      { name: 'Modelli 3D', extensions: ['vrm', 'glb', 'gltf', 'fbx', 'obj'] },
+      { name: 'Tutti i file', extensions: ['*'] },
+    ];
+  } else if (kind === 'sceneFile') {
+    filters = [
+      { name: 'Scene VAM (JSON)', extensions: ['json'] },
+      { name: 'Tutti i file', extensions: ['*'] },
+    ];
+  } else {
+    filters = [
+      { name: 'Immagini', extensions: ['png', 'webp', 'jpg', 'jpeg'] },
+      { name: 'Tutti i file', extensions: ['*'] },
+    ];
+  }
 
   const result = await dialog.showOpenDialog({
     title: `Seleziona file avatar ${kind}`,
@@ -820,24 +818,57 @@ ipcMain.handle('companion:pick-avatar-root', async () => {
 });
 
 ipcMain.handle('companion:scan-avatar-library', async (_event, rootPath) => {
-  const targetRoot = (rootPath || store.avatarLibraryRoot || 'D:\\').trim();
-  try {
-    return runPythonAvatarLibraryScan(targetRoot);
-  } catch (error) {
-    console.warn('Python avatar scanner fallback to JS:', error);
-    return {
-      rootPath: targetRoot,
-      items: scanAvatarLibrary(targetRoot, 4),
-    };
-  }
+  const targetRoot = (rootPath || store.avatarLibraryRoot || 'D:\\Saves\\scene').trim();
+  return {
+    rootPath: targetRoot,
+    items: scanVamPresets(targetRoot, 4),
+  };
 });
+
+ipcMain.handle('companion:list-quick-vam-avatars', async () => ({
+  items: getQuickVamPresets(),
+}));
 
 ipcMain.handle('companion:to-file-url', async (_event, filePath) => normalizeFilePath(filePath));
 
 ipcMain.handle('companion:focus-widget', async () => {
-  if (widgetWindow && !widgetWindow.isDestroyed()) {
-    widgetWindow.showInactive();
+  if (!widgetWindow || widgetWindow.isDestroyed()) {
+    createWidgetWindow();
+    syncWidgetWindowToActiveProfile();
+    broadcastSettings();
+    return;
   }
+  const activeProfile = getActiveProfile();
+  ensureWidgetPosition(activeProfile);
+  widgetWindow.setBounds({
+    x: activeProfile.widget.x,
+    y: activeProfile.widget.y,
+    width: activeProfile.widget.width,
+    height: activeProfile.widget.height,
+  }, false);
+  if (widgetWindow.isMinimized()) {
+    widgetWindow.restore();
+  }
+  widgetWindow.setAlwaysOnTop(Boolean(activeProfile.widget.alwaysOnTop), 'screen-saver');
+  widgetWindow.setIgnoreMouseEvents(false);
+  widgetWindow.show();
+  widgetWindow.focus();
+  widgetWindow.moveTop();
+  syncWidgetWindowToActiveProfile();
+  broadcastSettings();
+});
+
+ipcMain.handle('companion:open-studio', async () => {
+  if (!studioWindow || studioWindow.isDestroyed()) {
+    createStudioWindow();
+  }
+  if (studioWindow.isMinimized()) {
+    studioWindow.restore();
+  }
+  studioWindow.show();
+  studioWindow.focus();
+  studioWindow.moveTop();
+  broadcastSettings();
 });
 
 ipcMain.handle('companion:toggle-click-through', async (_event, enabled) => {

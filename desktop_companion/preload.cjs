@@ -13,8 +13,10 @@ contextBridge.exposeInMainWorld('gemcodeCompanion', {
   pickAvatarFile: kind => ipcRenderer.invoke('companion:pick-avatar-file', kind),
   pickAvatarRoot: () => ipcRenderer.invoke('companion:pick-avatar-root'),
   scanAvatarLibrary: rootPath => ipcRenderer.invoke('companion:scan-avatar-library', rootPath),
+  listQuickVamAvatars: () => ipcRenderer.invoke('companion:list-quick-vam-avatars'),
   toFileUrl: filePath => ipcRenderer.invoke('companion:to-file-url', filePath),
   focusWidget: () => ipcRenderer.invoke('companion:focus-widget'),
+  openStudio: () => ipcRenderer.invoke('companion:open-studio'),
   toggleClickThrough: enabled => ipcRenderer.invoke('companion:toggle-click-through', enabled),
   updateWidgetLiveState: payload => ipcRenderer.send('companion:update-widget-live-state', payload),
   onSettingsUpdated: callback => {
