@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c \":*)",
+      "Bash(node:*)",
+      "Read(//d//**)",
+      "Bash(find /d/Custom/Atom/Person/ -type f \\\\\\(-name *.obj -o -name *.fbx -o -name *.glb -o -name *.gltf -o -name *.dsf -o -name *.duf \\\\\\))",
+      "Bash(where AssetStudio)",
+      "Bash(where AssetRipper)",
+      "Bash(where UABE)",
+      "Read(//c/Users/dotto/AppData/Local/Programs//**)",
+      "Bash(pip list:*)",
+      "Bash(npm list:*)",
+      "Bash(pip install:*)",
+      "Bash(python3:*)",
+      "Bash(find D:/VaM_Data -name *.resource -o -name *.bundle -o -name *.unity3d)",
+      "Bash(taskkill //F //IM python.exe)",
+      "Bash(taskkill //F //IM python3.exe)",
+      "Bash(taskkill //F //IM electron.exe)",
+      "Bash(curl -s -X POST http://127.0.0.1:10301/api/companion/chat -H \"Content-Type: application/json\" -d '{\"\"\"\"text\"\"\"\":\"\"\"\"Ciao, dimmi qualcosa\"\"\"\",\"\"\"\"speak\"\"\"\":true,\"\"\"\"tts_provider\"\"\"\":\"\"\"\"edge-tts\"\"\"\",\"\"\"\"tts_voice\"\"\"\":\"\"\"\"it-IT-ElsaNeural\"\"\"\",\"\"\"\"device_id\"\"\"\":\"\"\"\"test\"\"\"\"}')",
+      "Bash(python -c \":*)",
+      "Bash(curl:*)"
+    ]
+  }
+}

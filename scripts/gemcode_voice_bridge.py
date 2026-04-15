@@ -166,8 +166,8 @@ class DeviceState:
     device_id: str
     remote_ip: str = ""
     firmware_mode: str = "ptt"
-    wake_word_label: str = "GEMMA"
-    wake_word_model: str = "placeholder - serve un modello GEMMA dedicato"
+    wake_word_label: str = "OK GEMMA"
+    wake_word_model: str = "placeholder - serve un modello OK GEMMA dedicato"
     device_name: str = "Home Assistant Voice PE"
     last_seen: float = field(default_factory=time.time)
 
@@ -185,9 +185,9 @@ class BridgeConfig:
     device_id: str = "box3"
     device_name: str = "Home Assistant Voice PE"
     device_mode: str = "ptt"
-    wake_word_label: str = "GEMMA"
-    wake_word_model: str = "placeholder - serve un modello GEMMA dedicato"
-    wake_word_notes: str = "Per una vera wake word GEMMA serve un modello micro_wake_word dedicato."
+    wake_word_label: str = "OK GEMMA"
+    wake_word_model: str = "placeholder - serve un modello OK GEMMA dedicato"
+    wake_word_notes: str = "Per una vera wake word OK GEMMA serve un modello micro_wake_word dedicato."
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> "BridgeConfig":
@@ -216,9 +216,9 @@ class BridgeConfig:
             device_id=str(data.get("device_id", "box3")),
             device_name=str(data.get("device_name", "Home Assistant Voice PE")),
             device_mode=str(data.get("device_mode", "ptt")),
-            wake_word_label=str(data.get("wake_word_label", "GEMMA")),
-            wake_word_model=str(data.get("wake_word_model", "placeholder - serve un modello GEMMA dedicato")),
-            wake_word_notes=str(data.get("wake_word_notes", "Per una vera wake word GEMMA serve un modello micro_wake_word dedicato.")),
+            wake_word_label=str(data.get("wake_word_label", "OK GEMMA")),
+            wake_word_model=str(data.get("wake_word_model", "placeholder - serve un modello OK GEMMA dedicato")),
+            wake_word_notes=str(data.get("wake_word_notes", "Per una vera wake word OK GEMMA serve un modello micro_wake_word dedicato.")),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -1065,6 +1065,280 @@ async def cors_middleware(request: web.Request, handler):
     return response
 
 
+# ═══════════════════════════════════════════════════════
+# VAM AICompanion.cs COMPATIBLE ENDPOINTS
+# These match the protocol expected by the VAM plugin
+# ═══════════════════════════════════════════════════════
+
+# Pending responses queue (from Electron Studio → VAM)
+_vam_pending_responses: deque = deque(maxlen=20)
+
+# Overlay state (synced from Electron companion)
+_vam_overlay_state = {"version": 0, "desktop_mode": True, "click_through": False}
+
+# ═══════════════════════════════════════════════════════
+# VAM Package Scanner — always up-to-date lists of
+# characters, clothing, hair from .var packages
+# ═══════════════════════════════════════════════════════
+
+import zipfile
+
+VAM_ADDON_DIR = Path("D:/AddonPackages")
+VAM_SCENES_DIR = Path("D:/Saves/scene")
+_vam_packages_cache: dict = {}
+_vam_packages_cache_mtime: float = 0.0
+
+
+def _scan_vam_packages() -> dict:
+    """Scan all .var packages and categorize by content type."""
+    global _vam_packages_cache, _vam_packages_cache_mtime
+
+    if not VAM_ADDON_DIR.exists():
+        return {"character": [], "clothing": [], "hair": [], "morph": [],
+                "scene": [], "plugin": [], "other": [], "total": 0, "error": "AddonPackages dir not found"}
+
+    # Check if any file changed since last scan (fast mtime check on directory)
+    dir_mtime = VAM_ADDON_DIR.stat().st_mtime
+    if dir_mtime == _vam_packages_cache_mtime and _vam_packages_cache:
+        return _vam_packages_cache
+
+    categories: dict[str, list] = {
+        "character": [], "clothing": [], "hair": [],
+        "morph": [], "scene": [], "plugin": [], "other": []
+    }
+
+    for var_file in sorted(VAM_ADDON_DIR.iterdir()):
+        if not var_file.suffix == ".var":
+            continue
+        try:
+            with zipfile.ZipFile(var_file) as z:
+                names = z.namelist()
+                # Read meta.json for display name
+                meta = {}
+                if "meta.json" in names:
+                    try:
+                        with z.open("meta.json") as mf:
+                            meta = json.load(mf)
+                    except Exception:
+                        pass
+
+                has_clothing = any("Custom/Clothing/" in n for n in names)
+                has_hair = any("Custom/Hair/" in n for n in names)
+                has_textures = any("Custom/Atom/Person/Textures/" in n for n in names)
+                has_morphs = any("Morphs/" in n for n in names)
+                has_scene = any("Saves/scene/" in n for n in names)
+                has_plugin = any("Custom/Scripts/" in n for n in names)
+                # Find preview image
+                preview = next((n for n in names if n.endswith(".jpg") and "scene/" in n.lower()), "")
+
+                entry = {
+                    "file": var_file.name,
+                    "creator": meta.get("creatorName", ""),
+                    "name": meta.get("packageName", var_file.stem),
+                    "description": meta.get("description", ""),
+                    "preview": preview,
+                    "size_mb": round(var_file.stat().st_size / 1048576, 1),
+                }
+
+                if has_clothing:
+                    # Extract clothing item names
+                    cloth_items = [n.split("/")[-1].rsplit(".", 1)[0]
+                                   for n in names if "Custom/Clothing/" in n and n.endswith((".vaj", ".vam"))]
+                    entry["items"] = cloth_items
+                    categories["clothing"].append(entry)
+                elif has_hair:
+                    hair_items = [n.split("/")[-1].rsplit(".", 1)[0]
+                                  for n in names if "Custom/Hair/" in n and n.endswith((".vaj", ".vam"))]
+                    entry["items"] = hair_items
+                    categories["hair"].append(entry)
+                elif has_textures and has_morphs:
+                    categories["character"].append(entry)
+                elif has_textures:
+                    categories["character"].append(entry)
+                elif has_morphs:
+                    categories["morph"].append(entry)
+                elif has_scene:
+                    categories["scene"].append(entry)
+                elif has_plugin:
+                    categories["plugin"].append(entry)
+                else:
+                    categories["other"].append(entry)
+        except Exception:
+            pass
+
+    result = {
+        **categories,
+        "total": sum(len(v) for v in categories.values()),
+        "scanned_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    _vam_packages_cache = result
+    _vam_packages_cache_mtime = dir_mtime
+    return result
+
+
+def _scan_vam_scenes() -> list[dict]:
+    """Scan scene JSON files in D:\\Saves\\scene for character data."""
+    scenes = []
+    if not VAM_SCENES_DIR.exists():
+        return scenes
+    for scene_dir in VAM_SCENES_DIR.iterdir():
+        if not scene_dir.is_dir():
+            continue
+        for scene_file in scene_dir.glob("*.json"):
+            preview = scene_file.with_suffix(".jpg")
+            entry = {
+                "file": str(scene_file),
+                "name": scene_file.stem,
+                "folder": scene_dir.name,
+                "has_preview": preview.exists(),
+                "preview_path": str(preview) if preview.exists() else "",
+            }
+            # Quick check for Person atoms
+            try:
+                with open(scene_file, "r", encoding="utf-8") as f:
+                    raw = f.read(200000)  # read first 200KB for large scenes
+                    entry["has_person"] = bool(re.search(r'"type"\s*:\s*"Person"', raw))
+            except Exception:
+                entry["has_person"] = False
+            scenes.append(entry)
+    return scenes
+
+
+async def handle_vam_packages(request: web.Request) -> web.Response:
+    """GET /api/vam/packages — returns categorized list of all .var packages."""
+    category = request.query.get("category", "")
+    result = _scan_vam_packages()
+    if category and category in result:
+        return web.json_response({"category": category, "items": result[category],
+                                  "total": len(result[category])})
+    return web.json_response(result)
+
+
+async def handle_vam_scenes(request: web.Request) -> web.Response:
+    """GET /api/vam/scenes — returns list of VAM scene files with Person atoms."""
+    scenes = _scan_vam_scenes()
+    return web.json_response({"scenes": scenes, "total": len(scenes)})
+
+
+def _parse_emotion_and_actions(text: str) -> tuple[str, str, list[str]]:
+    """Extract [emotion] and {action:gesture} tags from LLM response text."""
+    emotion = "neutral"
+    em = re.search(r"\[(neutral|smile|sad|angry|surprised|flirty|aroused|submissive)\]", text, re.I)
+    if em:
+        emotion = em.group(1).lower()
+    actions = [m.group(1) for m in re.finditer(r"\{action\s*:\s*(\w+)\}", text, re.I)]
+    clean = re.sub(r"\[(neutral|smile|sad|angry|surprised|flirty|aroused|submissive)\]", "", text, flags=re.I)
+    clean = re.sub(r"\{action\s*:\s*\w+\}", "", clean).strip()
+    clean = re.sub(r"\s{2,}", " ", clean)
+    return clean, emotion, actions
+
+
+async def handle_vam_chat_and_speak(request: web.Request) -> web.Response:
+    """POST /chat-and-speak — VAM AICompanion.cs compatible endpoint."""
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"status": "error", "text": "JSON non valido"}, status=400)
+
+    text = str(data.get("text", "")).strip()
+    if not text:
+        return web.json_response({"status": "error", "text": "testo mancante"}, status=400)
+
+    config = bridge_config_store.config
+
+    try:
+        raw_response = await query_gemcode_with_options(
+            text,
+            agent_url=config.agent_url,
+            model=config.model,
+            system_prompt=config.system_prompt,
+            temperature=config.temperature,
+            max_sentences=config.max_response_sentences,
+            max_chars=config.max_response_chars,
+        )
+    except Exception as exc:
+        logger.exception("VAM chat error")
+        return web.json_response({"status": "error", "text": str(exc)}, status=500)
+
+    clean_text, emotion, actions = _parse_emotion_and_actions(raw_response)
+
+    # TTS — generate audio and encode as base64 for VAM
+    audio_base64 = ""
+    audio_path = ""
+    audio_path_abs = ""
+    try:
+        audio_name = await synthesize_text_to_audio(
+            clean_text, "vam", config.tts_provider, config.tts_voice
+        )
+        abs_path = VOICE_AUDIO_DIR / audio_name
+        audio_path = audio_name
+        audio_path_abs = str(abs_path)
+        audio_base64 = base64.b64encode(abs_path.read_bytes()).decode("ascii")
+    except Exception as exc:
+        logger.warning("VAM TTS failed: %s", exc)
+
+    result = {
+        "status": "ok",
+        "text": clean_text,
+        "emotion": emotion,
+        "actions": actions,
+        "audio_path": audio_path,
+        "audio_path_abs": audio_path_abs,
+        "audio_base64": audio_base64,
+    }
+    logger.info("VAM response: emotion=%s actions=%s text=%s", emotion, actions, clean_text[:80])
+    return web.json_response(result)
+
+
+async def handle_vam_next_response(request: web.Request) -> web.Response:
+    """GET /next-response — VAM polls this for responses pushed from Electron Studio."""
+    if _vam_pending_responses:
+        resp = _vam_pending_responses.popleft()
+        return web.json_response(resp)
+    return web.json_response({"status": "empty"})
+
+
+async def handle_vam_overlay_state(request: web.Request) -> web.Response:
+    """GET /overlay-state — VAM syncs desktop transparency state."""
+    return web.json_response(_vam_overlay_state)
+
+
+async def handle_vam_listen(request: web.Request) -> web.Response:
+    """GET /listen — VAM triggers STT via bridge mic."""
+    try:
+        # Record from mic and transcribe
+        config = bridge_config_store.config
+        # Simple approach: use existing whisper model
+        # For now return empty — full mic capture requires platform-specific code
+        return web.json_response({"text": "", "status": "no_mic"})
+    except Exception as exc:
+        return web.json_response({"text": "", "error": str(exc)})
+
+
+async def handle_vam_push_response(request: web.Request) -> web.Response:
+    """POST /push-response — Electron Studio pushes a response for VAM to pick up."""
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "JSON non valido"}, status=400)
+    _vam_pending_responses.append(data)
+    return web.json_response({"status": "queued", "pending": len(_vam_pending_responses)})
+
+
+async def handle_vam_set_overlay(request: web.Request) -> web.Response:
+    """POST /overlay-state — Electron Studio updates overlay state."""
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "JSON non valido"}, status=400)
+    _vam_overlay_state["version"] = _vam_overlay_state.get("version", 0) + 1
+    if "desktop_mode" in data:
+        _vam_overlay_state["desktop_mode"] = bool(data["desktop_mode"])
+    if "click_through" in data:
+        _vam_overlay_state["click_through"] = bool(data["click_through"])
+    return web.json_response(_vam_overlay_state)
+
+
 async def run_http_server() -> None:
     app = web.Application(middlewares=[cors_middleware])
     app.router.add_get("/health", handle_health)
@@ -1078,6 +1352,16 @@ async def run_http_server() -> None:
     app.router.add_get("/api/settings", handle_settings)
     app.router.add_post("/api/settings", handle_settings)
     app.router.add_get("/audio/{audio_name}", handle_audio)
+    # VAM AICompanion.cs compatible endpoints
+    app.router.add_post("/chat-and-speak", handle_vam_chat_and_speak)
+    app.router.add_get("/next-response", handle_vam_next_response)
+    app.router.add_get("/overlay-state", handle_vam_overlay_state)
+    app.router.add_post("/overlay-state", handle_vam_set_overlay)
+    app.router.add_get("/listen", handle_vam_listen)
+    app.router.add_post("/push-response", handle_vam_push_response)
+    # VAM package/scene scanner endpoints
+    app.router.add_get("/api/vam/packages", handle_vam_packages)
+    app.router.add_get("/api/vam/scenes", handle_vam_scenes)
 
     runner = web.AppRunner(app)
     await runner.setup()

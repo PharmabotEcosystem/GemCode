@@ -4,6 +4,11 @@ const state = {
   avatarLibrary: [],
   quickAvatars: [],
   bridgeHealthTimer: null,
+  characterData: null,
+  characterScenes: [],
+  savedPresets: [],
+  skinPackages: [],
+  activeCharTab: 'select',
 };
 
 const elements = {};
@@ -33,7 +38,6 @@ function bindElements() {
     avatarLibraryCount: $('avatarLibraryCount'),
     pickAvatarRootButton: $('pickAvatarRootButton'),
     scanAvatarLibraryButton: $('scanAvatarLibraryButton'),
-    avatarLibraryResults: $('avatarLibraryResults'),
     profileName: $('profileName'),
     avatarName: $('avatarName'),
     interlocutorName: $('interlocutorName'),
@@ -86,12 +90,23 @@ function bindElements() {
     permissionBrowserAutomation: $('permissionBrowserAutomation'),
     permissionMicrophone: $('permissionMicrophone'),
     permissionNotifications: $('permissionNotifications'),
-    baseImagePath: $('baseImagePath'),
-    blinkImagePath: $('blinkImagePath'),
-    mouthOpenImagePath: $('mouthOpenImagePath'),
-    auraImagePath: $('auraImagePath'),
-    primaryModelPath: $('primaryModelPath'),
-    sceneFilePath: $('sceneFilePath'),
+    characterGrid: $('characterGrid'),
+    charTabSelect: $('charTabSelect'),
+    charTabOutfit: $('charTabOutfit'),
+    charTabBody: $('charTabBody'),
+    charTabPresets: $('charTabPresets'),
+    outfitActiveCharacter: $('outfitActiveCharacter'),
+    outfitCategories: $('outfitCategories'),
+    skinPackSection: $('skinPackSection'),
+    skinPackGrid: $('skinPackGrid'),
+    morphActiveCharacter: $('morphActiveCharacter'),
+    morphCategories: $('morphCategories'),
+    presetSaveName: $('presetSaveName'),
+    savePresetButton: $('savePresetButton'),
+    savedPresetList: $('savedPresetList'),
+    charPreviewThumb: $('charPreviewThumb'),
+    charPreviewMeta: $('charPreviewMeta'),
+    charPreviewOutfitSummary: $('charPreviewOutfitSummary'),
     bridgeHealth: $('bridgeHealth'),
     chatStatus: $('chatStatus'),
     chatLog: $('chatLog'),
@@ -108,6 +123,7 @@ function activeProfile() {
 }
 
 function setSliderBadge(input, output, suffix = '') {
+  if (!input || !output) return;
   output.textContent = `${input.value}${suffix}`;
 }
 
@@ -136,20 +152,614 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
+// Note: innerHTML usage below is safe — all interpolated values pass through
+// escapeHtml() and data sources are local VAM scene files, not web input.
+
+/* ─── Character Panel ─── */
+
+function switchCharTab(tabName) {
+  state.activeCharTab = tabName;
+  document.querySelectorAll('.char-tab').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.charTab === tabName);
+  });
+  document.querySelectorAll('.char-tab-panel').forEach(panel => {
+    panel.classList.toggle('active', panel.dataset.charPanel === tabName);
+  });
+}
+
+function buildCharacterCardHtml(scene, index, selected) {
+  const thumbSrc = scene.previewImage
+    ? encodeURI(`file:///${scene.previewImage.replace(/\\/g, '/')}`)
+    : '';
+  const thumbContent = thumbSrc
+    ? '<img src="' + thumbSrc + '" alt="' + escapeHtml(scene.name) + '" />'
+    : '<div class="avatar-preview-fallback-core small"></div>';
+  const selectedClass = selected ? ' selected' : '';
+
+  const card = document.createElement('article');
+  card.className = 'character-card-item' + selectedClass;
+  card.dataset.sceneIndex = String(index);
+
+  const thumbDiv = document.createElement('div');
+  thumbDiv.className = 'character-card-thumb';
+  thumbDiv.textContent = '';
+  if (thumbSrc) {
+    const img = document.createElement('img');
+    img.src = thumbSrc;
+    img.alt = scene.name || '';
+    thumbDiv.appendChild(img);
+  } else {
+    const fallback = document.createElement('div');
+    fallback.className = 'avatar-preview-fallback-core small';
+    thumbDiv.appendChild(fallback);
+  }
+
+  const bodyDiv = document.createElement('div');
+  bodyDiv.className = 'character-card-body';
+  const h4 = document.createElement('h4');
+  h4.textContent = scene.characterName || scene.name || '';
+  const countsSpan = document.createElement('span');
+  countsSpan.className = 'character-card-counts';
+  const clothing = scene.appearance?.counts?.clothing || 0;
+  const hair = scene.appearance?.counts?.hair || 0;
+  const morphs = scene.appearance?.counts?.morphs || 0;
+  countsSpan.textContent = `Abiti ${clothing} · Capelli ${hair} · Morph ${morphs}`;
+  bodyDiv.appendChild(h4);
+  bodyDiv.appendChild(countsSpan);
+
+  card.appendChild(thumbDiv);
+  card.appendChild(bodyDiv);
+  return card;
+}
+
+function renderCharacterGrid(scenes) {
+  state.characterScenes = scenes;
+  elements.avatarLibraryCount.textContent = `${scenes.length} personaggi trovati`;
+
+  elements.characterGrid.textContent = '';
+
+  if (!scenes.length) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    empty.textContent = 'Premi "Scansiona scene" per trovare personaggi VAM.';
+    elements.characterGrid.appendChild(empty);
+    return;
+  }
+
+  const preset = activeProfile()?.characterPreset;
+  scenes.forEach((scene, i) => {
+    const selected = preset?.sourceScene && preset.sourceScene === scene.sceneFile;
+    const card = buildCharacterCardHtml(scene, i, selected);
+    card.addEventListener('click', () => {
+      const s = state.characterScenes[i];
+      if (s) void selectCharacter(s);
+    });
+    elements.characterGrid.appendChild(card);
+  });
+}
+
+async function selectCharacter(scene) {
+  const profile = activeProfile();
+  if (!profile) return;
+
+  setChatStatus(`Caricamento ${scene.name}...`);
+  const charData = await window.gemcodeCompanion.getCharacterData(scene.sceneFile);
+  state.characterData = charData;
+
+  const clothing = (charData.clothing || []).map(c => ({
+    id: c.id,
+    name: c.name,
+    enabled: c.enabled !== false,
+    category: c.category || 'accessori',
+  }));
+  const hair = (charData.hair || []).map(h => ({
+    id: h.id,
+    name: h.name,
+    enabled: h.enabled !== false,
+  }));
+  const morphOverrides = {};
+  if (charData.morphs?.items) {
+    for (const m of charData.morphs.items) {
+      if (m.value !== 0) morphOverrides[m.name] = m.value;
+    }
+  }
+
+  const characterPreset = {
+    sourceScene: scene.sceneFile,
+    characterBase: charData.characterBase || charData.name || '',
+    skinPackage: profile.characterPreset?.skinPackage || '',
+    clothing,
+    hair,
+    morphOverrides,
+    skinColor: charData.skinColor || { h: 0, s: 0, v: 1 },
+  };
+
+  const snapshot = await window.gemcodeCompanion.updateProfile(profile.id, { characterPreset });
+  renderSnapshot(snapshot);
+  renderCharacterGrid(state.characterScenes);
+  renderOutfitPanel(charData, characterPreset);
+  renderMorphPanel(charData, characterPreset);
+  updateCharPreviewBar(charData, characterPreset);
+  switchCharTab('outfit');
+  setChatStatus(`Personaggio selezionato: ${charData.characterBase || charData.name}`);
+}
+
+function buildOutfitToggleItem(labelText, dataAttr, dataValue, checked) {
+  const label = document.createElement('label');
+  label.className = 'outfit-toggle-item';
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.dataset[dataAttr] = String(dataValue);
+  cb.checked = checked;
+  const span = document.createElement('span');
+  span.textContent = labelText;
+  label.appendChild(cb);
+  label.appendChild(span);
+  return label;
+}
+
+function buildCollapsibleSection(title, sectionKey, items, buildItemFn) {
+  const section = document.createElement('div');
+  section.className = 'outfit-section';
+
+  const head = document.createElement('h3');
+  head.className = 'outfit-section-head collapsible';
+  head.dataset.section = sectionKey;
+  head.textContent = title;
+
+  const grid = document.createElement('div');
+  grid.className = 'outfit-toggle-grid';
+  grid.dataset.sectionBody = sectionKey;
+
+  items.forEach((item, i) => grid.appendChild(buildItemFn(item, i)));
+
+  head.addEventListener('click', () => {
+    grid.classList.toggle('collapsed');
+    head.classList.toggle('collapsed');
+  });
+
+  section.appendChild(head);
+  section.appendChild(grid);
+  return section;
+}
+
+function renderOutfitPanel(charData, preset) {
+  const charLabel = elements.outfitActiveCharacter.querySelector('.outfit-char-label');
+  if (charLabel) charLabel.textContent = preset.characterBase || charData?.name || 'Personaggio';
+
+  elements.outfitCategories.textContent = '';
+
+  if (!charData || !preset) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    empty.textContent = 'Seleziona un personaggio per vedere le opzioni di vestiario.';
+    elements.outfitCategories.appendChild(empty);
+    return;
+  }
+
+  // Hair section
+  if (preset.hair.length > 0) {
+    const hairSection = buildCollapsibleSection(
+      'Capelli', 'hair', preset.hair,
+      (h, i) => {
+        const item = buildOutfitToggleItem(h.name, 'hairIndex', i, h.enabled);
+        item.querySelector('input').addEventListener('change', (e) => {
+          toggleOutfitItem('hair', i, e.target.checked);
+        });
+        return item;
+      }
+    );
+    elements.outfitCategories.appendChild(hairSection);
+  }
+
+  // Group clothing by category
+  const byCategory = {};
+  for (const item of preset.clothing) {
+    const cat = item.category || 'accessori';
+    if (!byCategory[cat]) byCategory[cat] = [];
+    byCategory[cat].push({ item, globalIndex: preset.clothing.indexOf(item) });
+  }
+
+  const categoryOrder = ['top', 'pantaloni', 'gonna', 'intimo', 'calze', 'scarpe', 'accessori', 'viso'];
+  const sortedCategories = Object.keys(byCategory).sort((a, b) => {
+    const ia = categoryOrder.indexOf(a);
+    const ib = categoryOrder.indexOf(b);
+    return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+  });
+
+  for (const cat of sortedCategories) {
+    const catItems = byCategory[cat];
+    const title = cat.charAt(0).toUpperCase() + cat.slice(1) + ' (' + catItems.length + ')';
+    const section = buildCollapsibleSection(
+      title, cat, catItems,
+      (entry) => {
+        const toggle = buildOutfitToggleItem(entry.item.name, 'clothingIndex', entry.globalIndex, entry.item.enabled);
+        toggle.querySelector('input').addEventListener('change', (e) => {
+          toggleOutfitItem('clothing', entry.globalIndex, e.target.checked);
+        });
+        return toggle;
+      }
+    );
+    elements.outfitCategories.appendChild(section);
+  }
+}
+
+function renderMorphPanel(charData, preset) {
+  const charLabel = elements.morphActiveCharacter.querySelector('.outfit-char-label');
+  if (charLabel) charLabel.textContent = preset?.characterBase || charData?.name || 'Personaggio';
+
+  elements.morphCategories.textContent = '';
+
+  if (!charData?.morphs?.categories) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    empty.textContent = 'Seleziona un personaggio per vedere i morph disponibili.';
+    elements.morphCategories.appendChild(empty);
+    return;
+  }
+
+  const cats = charData.morphs.categories;
+  const categoryOrder = ['volto', 'occhi', 'naso', 'bocca', 'pelle', 'seno', 'fisico', 'mani e posa'];
+  const sortedCats = Object.keys(cats).sort((a, b) => {
+    const ia = categoryOrder.indexOf(a);
+    const ib = categoryOrder.indexOf(b);
+    return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+  });
+
+  for (const cat of sortedCats) {
+    const morphs = cats[cat];
+    if (!morphs || morphs.length === 0) continue;
+
+    const group = document.createElement('div');
+    group.className = 'morph-category-group';
+
+    const head = document.createElement('h3');
+    head.className = 'morph-category-head collapsible';
+    head.dataset.morphSection = cat;
+    head.textContent = cat.charAt(0).toUpperCase() + cat.slice(1) + ' (' + morphs.length + ')';
+
+    const grid = document.createElement('div');
+    grid.className = 'morph-slider-grid';
+    grid.dataset.morphSectionBody = cat;
+
+    for (const m of morphs) {
+      const val = preset?.morphOverrides?.[m.name] ?? m.value ?? 0;
+
+      const sliderItem = document.createElement('div');
+      sliderItem.className = 'morph-slider-item';
+
+      const label = document.createElement('label');
+      label.textContent = m.name;
+
+      const input = document.createElement('input');
+      input.type = 'range';
+      input.min = '-1';
+      input.max = '1';
+      input.step = '0.01';
+      input.value = String(val);
+      input.dataset.morphName = m.name;
+
+      const badge = document.createElement('span');
+      badge.className = 'morph-value-badge';
+      badge.textContent = Number(val).toFixed(2);
+
+      input.addEventListener('input', () => {
+        badge.textContent = Number(input.value).toFixed(2);
+      });
+      input.addEventListener('change', () => {
+        updateMorphOverride(input.dataset.morphName, Number(input.value));
+      });
+
+      sliderItem.appendChild(label);
+      sliderItem.appendChild(input);
+      sliderItem.appendChild(badge);
+      grid.appendChild(sliderItem);
+    }
+
+    head.addEventListener('click', () => {
+      grid.classList.toggle('collapsed');
+      head.classList.toggle('collapsed');
+    });
+
+    group.appendChild(head);
+    group.appendChild(grid);
+    elements.morphCategories.appendChild(group);
+  }
+}
+
+function renderSkinPackGrid(packages) {
+  state.skinPackages = packages || [];
+  const preset = activeProfile()?.characterPreset;
+
+  elements.skinPackGrid.textContent = '';
+
+  if (!state.skinPackages.length) {
+    const note = document.createElement('div');
+    note.className = 'meta-note';
+    note.textContent = 'Nessun skin pack trovato.';
+    elements.skinPackGrid.appendChild(note);
+    return;
+  }
+
+  state.skinPackages.forEach((pkg, i) => {
+    const selected = preset?.skinPackage && preset.skinPackage === pkg.path;
+    const card = document.createElement('div');
+    card.className = 'skin-pack-card' + (selected ? ' selected' : '');
+    card.dataset.skinIndex = String(i);
+
+    const strong = document.createElement('strong');
+    strong.textContent = pkg.name || pkg.path;
+    card.appendChild(strong);
+
+    if (pkg.creator) {
+      const note = document.createElement('span');
+      note.className = 'meta-note';
+      note.textContent = pkg.creator;
+      card.appendChild(note);
+    }
+
+    card.addEventListener('click', () => void applySkinPackage(pkg));
+    elements.skinPackGrid.appendChild(card);
+  });
+}
+
+async function applySkinPackage(pkg) {
+  const profile = activeProfile();
+  if (!profile?.characterPreset) return;
+  const characterPreset = { ...profile.characterPreset, skinPackage: pkg.path };
+  const snapshot = await window.gemcodeCompanion.updateProfile(profile.id, { characterPreset });
+  renderSnapshot(snapshot);
+  renderSkinPackGrid(state.skinPackages);
+  updateCharPreviewBar(state.characterData, characterPreset);
+  setChatStatus(`Skin pack applicato: ${pkg.name || pkg.path}`);
+}
+
+async function toggleOutfitItem(type, index, enabled) {
+  const profile = activeProfile();
+  if (!profile?.characterPreset) return;
+  const preset = { ...profile.characterPreset };
+  if (type === 'clothing') {
+    preset.clothing = [...preset.clothing];
+    if (preset.clothing[index]) {
+      preset.clothing[index] = { ...preset.clothing[index], enabled };
+    }
+  } else if (type === 'hair') {
+    preset.hair = [...preset.hair];
+    if (preset.hair[index]) {
+      preset.hair[index] = { ...preset.hair[index], enabled };
+    }
+  }
+  const snapshot = await window.gemcodeCompanion.updateProfile(profile.id, { characterPreset: preset });
+  state.snapshot = snapshot;
+  updateCharPreviewBar(state.characterData, preset);
+}
+
+async function updateMorphOverride(morphName, value) {
+  const profile = activeProfile();
+  if (!profile?.characterPreset) return;
+  const preset = { ...profile.characterPreset };
+  preset.morphOverrides = { ...preset.morphOverrides, [morphName]: value };
+  const snapshot = await window.gemcodeCompanion.updateProfile(profile.id, { characterPreset: preset });
+  state.snapshot = snapshot;
+}
+
+function updateCharPreviewBar(charData, preset) {
+  const nameEl = elements.charPreviewMeta.querySelector('.char-preview-name');
+  const detailsEl = elements.charPreviewMeta.querySelector('.char-preview-details');
+
+  if (!charData || !preset) {
+    if (nameEl) nameEl.textContent = '\u2014';
+    if (detailsEl) detailsEl.textContent = 'Seleziona un personaggio per iniziare';
+    elements.charPreviewOutfitSummary.textContent = '';
+    elements.charPreviewThumb.textContent = '';
+    const fallback = document.createElement('div');
+    fallback.className = 'avatar-preview-fallback-core small';
+    elements.charPreviewThumb.appendChild(fallback);
+    return;
+  }
+
+  if (nameEl) nameEl.textContent = preset.characterBase || charData.name || '';
+  if (detailsEl) {
+    const enabledClothing = preset.clothing.filter(c => c.enabled).length;
+    const totalClothing = preset.clothing.length;
+    const enabledHair = preset.hair.filter(h => h.enabled).length;
+    detailsEl.textContent = `Abiti ${enabledClothing}/${totalClothing} · Capelli ${enabledHair} · Morph ${Object.keys(preset.morphOverrides).length}`;
+  }
+
+  // Preview thumbnail
+  elements.charPreviewThumb.textContent = '';
+  if (charData.previewImage) {
+    const img = document.createElement('img');
+    img.src = encodeURI(`file:///${charData.previewImage.replace(/\\/g, '/')}`);
+    img.alt = 'preview';
+    elements.charPreviewThumb.appendChild(img);
+  } else {
+    const fallback = document.createElement('div');
+    fallback.className = 'avatar-preview-fallback-core small';
+    elements.charPreviewThumb.appendChild(fallback);
+  }
+
+  // Outfit summary pills
+  const activeCats = {};
+  for (const c of preset.clothing.filter(c => c.enabled)) {
+    activeCats[c.category] = (activeCats[c.category] || 0) + 1;
+  }
+  elements.charPreviewOutfitSummary.textContent = '';
+  for (const [cat, count] of Object.entries(activeCats)) {
+    const pill = document.createElement('span');
+    pill.className = 'outfit-pill';
+    pill.textContent = `${cat} (${count})`;
+    elements.charPreviewOutfitSummary.appendChild(pill);
+  }
+}
+
+async function renderSavedPresets() {
+  const presets = await window.gemcodeCompanion.listCharacterPresets();
+  state.savedPresets = presets;
+
+  elements.savedPresetList.textContent = '';
+
+  if (!presets || presets.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    empty.textContent = 'Nessun preset salvato.';
+    elements.savedPresetList.appendChild(empty);
+    return;
+  }
+
+  for (const p of presets) {
+    const item = document.createElement('div');
+    item.className = 'saved-preset-item';
+
+    const info = document.createElement('div');
+    info.className = 'saved-preset-info';
+    const strong = document.createElement('strong');
+    strong.textContent = p.name || p.fileName;
+    const meta = document.createElement('span');
+    meta.className = 'meta-note';
+    meta.textContent = p.characterBase || '';
+    info.appendChild(strong);
+    info.appendChild(meta);
+
+    const actions = document.createElement('div');
+    actions.className = 'saved-preset-actions';
+
+    const loadBtn = document.createElement('button');
+    loadBtn.className = 'secondary-button';
+    loadBtn.textContent = 'Carica';
+    loadBtn.addEventListener('click', () => void loadPreset(p.fileName));
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'danger-button';
+    deleteBtn.textContent = 'Elimina';
+    deleteBtn.addEventListener('click', () => void deletePreset(p.fileName));
+
+    actions.appendChild(loadBtn);
+    actions.appendChild(deleteBtn);
+
+    item.appendChild(info);
+    item.appendChild(actions);
+    elements.savedPresetList.appendChild(item);
+  }
+}
+
+async function saveCurrentPreset() {
+  const profile = activeProfile();
+  if (!profile?.characterPreset?.sourceScene) {
+    setChatStatus('Nessun personaggio selezionato da salvare');
+    return;
+  }
+  const name = elements.presetSaveName.value.trim();
+  if (!name) {
+    setChatStatus('Inserisci un nome per il preset');
+    return;
+  }
+  await window.gemcodeCompanion.saveCharacterPreset(name, profile.characterPreset);
+  elements.presetSaveName.value = '';
+  await renderSavedPresets();
+  setChatStatus(`Preset "${name}" salvato`);
+}
+
+async function loadPreset(fileName) {
+  const profile = activeProfile();
+  if (!profile) return;
+  const presetData = await window.gemcodeCompanion.loadCharacterPreset(fileName);
+  if (!presetData) {
+    setChatStatus('Errore nel caricamento del preset');
+    return;
+  }
+  const snapshot = await window.gemcodeCompanion.updateProfile(profile.id, { characterPreset: presetData });
+  renderSnapshot(snapshot);
+
+  if (presetData.sourceScene) {
+    const charData = await window.gemcodeCompanion.getCharacterData(presetData.sourceScene);
+    state.characterData = charData;
+    renderOutfitPanel(charData, presetData);
+    renderMorphPanel(charData, presetData);
+    updateCharPreviewBar(charData, presetData);
+  }
+  setChatStatus(`Preset caricato: ${fileName}`);
+}
+
+async function deletePreset(fileName) {
+  if (!window.confirm(`Eliminare il preset "${fileName}"?`)) return;
+  await window.gemcodeCompanion.deleteCharacterPreset(fileName);
+  await renderSavedPresets();
+  setChatStatus('Preset eliminato');
+}
+
+/* ─── Quick Avatar Select (sidebar) ─── */
+
+function renderQuickAvatarMenu(items) {
+  state.quickAvatars = Array.isArray(items) ? items : [];
+  if (!state.quickAvatars.length) {
+    elements.quickAvatarSelect.textContent = '';
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = 'Nessun preset VAM disponibile';
+    elements.quickAvatarSelect.appendChild(opt);
+    elements.quickAvatarSelect.disabled = true;
+    elements.quickAvatarMeta.textContent = 'Nessuna scena VAM con Person trovata.';
+    return;
+  }
+
+  elements.quickAvatarSelect.disabled = false;
+  elements.quickAvatarSelect.textContent = '';
+  for (const item of state.quickAvatars) {
+    const opt = document.createElement('option');
+    opt.value = item.sceneFile;
+    opt.textContent = item.name + (item.characterName ? ` (${item.characterName})` : '');
+    elements.quickAvatarSelect.appendChild(opt);
+  }
+
+  const profile = activeProfile();
+  const currentScene = profile?.characterPreset?.sourceScene || profile?.avatar?.sceneFile || '';
+  const match = state.quickAvatars.find(item => item.sceneFile === currentScene);
+  if (match) elements.quickAvatarSelect.value = match.sceneFile;
+
+  const currentItem = state.quickAvatars.find(item => item.sceneFile === elements.quickAvatarSelect.value) || state.quickAvatars[0];
+  elements.quickAvatarMeta.textContent = currentItem
+    ? `${currentItem.name}${currentItem.characterName ? ` · ${currentItem.characterName}` : ''} · ${currentItem.compatibility}`
+    : 'Seleziona un preset avatar.';
+}
+
+async function applyQuickAvatarSelection() {
+  const selected = state.quickAvatars.find(item => item.sceneFile === elements.quickAvatarSelect.value);
+  if (!selected) return;
+  elements.quickAvatarMeta.textContent = `${selected.name}${selected.characterName ? ` · ${selected.characterName}` : ''} · ${selected.compatibility}`;
+  await selectCharacter(selected);
+  setChatStatus(`Preset applicato: ${selected.name}`);
+}
+
+/* ─── Rendering ─── */
+
 function renderProfileOptions(snapshot) {
-  elements.profileSelect.innerHTML = snapshot.profiles
-    .map(profile => `<option value="${escapeHtml(profile.id)}">${escapeHtml(profile.name)}</option>`)
-    .join('');
+  elements.profileSelect.textContent = '';
+  for (const profile of snapshot.profiles) {
+    const opt = document.createElement('option');
+    opt.value = profile.id;
+    opt.textContent = profile.name;
+    elements.profileSelect.appendChild(opt);
+  }
   elements.profileSelect.value = snapshot.activeProfileId;
 }
 
 function renderChatLog(messages) {
   const recentMessages = Array.isArray(messages) ? messages : [];
-  elements.chatLog.innerHTML = recentMessages.length
-    ? recentMessages
-        .map(message => `<div class="message ${message.role}">${escapeHtml(message.text)}</div>`)
-        .join('')
-    : '<div class="empty-state">Nessuna conversazione salvata nel profilo attivo.</div>';
+  elements.chatLog.textContent = '';
+  if (recentMessages.length) {
+    for (const message of recentMessages) {
+      const div = document.createElement('div');
+      div.className = 'message ' + message.role;
+      div.textContent = message.text;
+      elements.chatLog.appendChild(div);
+    }
+  } else {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    empty.textContent = 'Nessuna conversazione salvata nel profilo attivo.';
+    elements.chatLog.appendChild(empty);
+  }
   elements.chatLog.scrollTop = elements.chatLog.scrollHeight;
   elements.recentMemoryCount.textContent = String(recentMessages.length);
 }
@@ -221,13 +831,6 @@ function renderSnapshot(snapshot) {
   elements.permissionMicrophone.value = profile.permissions.microphone || 'allow';
   elements.permissionNotifications.value = profile.permissions.notifications || 'allow';
 
-  elements.baseImagePath.textContent = profile.avatar.baseImage || 'Default integrato';
-  elements.blinkImagePath.textContent = profile.avatar.blinkImage || 'Blink sintetico';
-  elements.mouthOpenImagePath.textContent = profile.avatar.mouthOpenImage || 'Lip-sync sintetico';
-  elements.auraImagePath.textContent = profile.avatar.auraImage || 'Aura CSS';
-  elements.primaryModelPath.textContent = profile.avatar.primaryModel || 'Nessun modello 3D';
-  elements.sceneFilePath.textContent = profile.avatar.sceneFile || 'Nessuna scena VAM';
-
   setSliderBadge(elements.temperature, elements.temperatureValue);
   setSliderBadge(elements.widgetWidth, elements.widgetWidthValue, ' px');
   setSliderBadge(elements.widgetHeight, elements.widgetHeightValue, ' px');
@@ -235,82 +838,15 @@ function renderSnapshot(snapshot) {
   setSliderBadge(elements.widgetOpacity, elements.widgetOpacityValue);
 
   renderChatLog(profile.memory.recentMessages || []);
-}
 
-function renderAvatarLibrary(items, rootPath) {
-  state.avatarLibrary = items;
-  elements.avatarLibraryRootLabel.textContent = rootPath;
-  elements.avatarLibraryCount.textContent = `${items.length} preset rilevati`;
-
-  if (items.length === 0) {
-    elements.avatarLibraryResults.innerHTML = '<div class="empty-state">Nessun preset VAM con avatar Person trovato nella cartella scelta.</div>';
-    return;
+  // Update character preview bar from existing preset
+  const preset = profile.characterPreset;
+  if (preset?.sourceScene && state.characterData) {
+    updateCharPreviewBar(state.characterData, preset);
   }
-
-  elements.avatarLibraryResults.innerHTML = items
-    .map(
-      (item, index) => `
-        <article class="library-card">
-          <div class="library-preview">
-            ${item.previewImage ? `<img src="${encodeURI(`file:///${item.previewImage.replace(/\\/g, '/')}`)}" alt="${escapeHtml(item.name)}" />` : '<div class="empty-state">Nessuna preview</div>'}
-          </div>
-          <div class="library-body">
-            <div class="library-title-row">
-              <h3>${escapeHtml(item.name)}</h3>
-              <span class="library-badge">${escapeHtml(item.compatibility)}</span>
-            </div>
-            <div class="library-meta">${item.characterName ? `Personaggio: ${escapeHtml(item.characterName)}` : 'Personaggio non specificato'}</div>
-            <div class="library-path">${escapeHtml(item.sceneFile)}</div>
-            <div class="library-controls">
-              <button class="secondary-button apply-avatar-button" data-index="${index}">Usa preset</button>
-            </div>
-          </div>
-        </article>
-      `
-    )
-    .join('');
-
-  document.querySelectorAll('.apply-avatar-button').forEach(button => {
-    button.addEventListener('click', () => {
-      const item = state.avatarLibrary[Number(button.dataset.index)];
-      if (!item) return;
-      void applyAvatarBundle(item);
-    });
-  });
 }
 
-function findCurrentQuickAvatarValue(profile) {
-  if (!profile) return '';
-  return state.quickAvatars.find(item => {
-    return Boolean(profile.avatar.sceneFile) && profile.avatar.sceneFile === item.sceneFile;
-  })?.sceneFile || '';
-}
-
-function renderQuickAvatarMenu(items) {
-  state.quickAvatars = Array.isArray(items) ? items : [];
-  if (!state.quickAvatars.length) {
-    elements.quickAvatarSelect.innerHTML = '<option value="">Nessun preset VAM disponibile</option>';
-    elements.quickAvatarSelect.disabled = true;
-    elements.quickAvatarMeta.textContent = 'Nessuna scena VAM con Person trovata.';
-    return;
-  }
-
-  elements.quickAvatarSelect.disabled = false;
-  elements.quickAvatarSelect.innerHTML = state.quickAvatars
-    .map(item => `<option value="${escapeHtml(item.sceneFile)}">${escapeHtml(item.name)}${item.characterName ? ` (${escapeHtml(item.characterName)})` : ''}</option>`)
-    .join('');
-
-  const profile = activeProfile();
-  const currentValue = findCurrentQuickAvatarValue(profile);
-  if (currentValue) {
-    elements.quickAvatarSelect.value = currentValue;
-  }
-
-  const currentItem = state.quickAvatars.find(item => item.sceneFile === elements.quickAvatarSelect.value) || state.quickAvatars[0];
-  elements.quickAvatarMeta.textContent = currentItem
-    ? `${currentItem.name}${currentItem.characterName ? ` · ${currentItem.characterName}` : ''} · ${currentItem.compatibility}`
-    : 'Seleziona un preset avatar.';
-}
+/* ─── Data Collection ─── */
 
 function collectAppSettingsFromForm() {
   return {
@@ -400,9 +936,13 @@ function collectProfileFromForm() {
       auraImage: profile?.avatar?.auraImage || '',
       primaryModel: profile?.avatar?.primaryModel || '',
       idleAnimation: profile?.avatar?.idleAnimation || 'breathe',
+      sceneFile: profile?.characterPreset?.sourceScene || profile?.avatar?.sceneFile || '',
     },
+    characterPreset: profile?.characterPreset || undefined,
   };
 }
+
+/* ─── Chat & Voice ─── */
 
 function setChatStatus(text) {
   elements.chatStatus.textContent = text;
@@ -613,16 +1153,13 @@ async function sendChat(text, fromVoice = false) {
 
   const cleanText = (text || elements.chatInput.value).trim();
   if (!cleanText) return;
+  const originalInputValue = elements.chatInput.value;
 
   const collectedProfile = collectProfileFromForm();
   const currentMessages = [...(profile.memory.recentMessages || [])];
   const userMessage = { role: 'user', text: cleanText, ts: new Date().toISOString() };
   const pendingMessages = [...currentMessages, userMessage].slice(-24);
   renderChatLog(pendingMessages);
-
-  if (!fromVoice) {
-    elements.chatInput.value = '';
-  }
 
   setChatStatus('Thinking');
   updateWidgetLiveState({ phase: 'thinking', transcript: cleanText, responseText: '' });
@@ -641,113 +1178,146 @@ async function sendChat(text, fromVoice = false) {
     avatar: { ...profile.avatar, ...collectedProfile.avatar },
   };
 
-  const response = await fetch(`${elements.bridgeUrl.value.trim()}/api/companion/chat`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      text: cleanText,
-      agent_url: runtimeProfile.llm.agentUrl,
-      model: runtimeProfile.llm.model,
-      system_prompt: buildCompositeSystemPrompt(runtimeProfile),
-      temperature: Number(runtimeProfile.llm.temperature),
-      max_response_sentences: runtimeProfile.llm.maxResponseSentences,
-      max_response_chars: runtimeProfile.llm.maxResponseChars,
-      speak: runtimeProfile.tts.autoSpeak,
-      tts_provider: runtimeProfile.tts.provider,
-      tts_voice: runtimeProfile.tts.voice,
-      device_id: `desktop-companion:${runtimeProfile.id}`,
-    }),
-  });
-  const payload = await response.json();
-  const rawResponse = payload.response_text || payload.error || 'Nessuna risposta';
-  const parsed = parseEmotionAndGestures(rawResponse);
-  const responseText = parsed.cleanText || rawResponse;
-  const nextMessages = [...pendingMessages, { role: 'assistant', text: responseText, ts: new Date().toISOString() }].slice(-24);
-
-  renderChatLog(nextMessages);
-  await persistRecentMessages(nextMessages);
-
-  const liveState = { phase: payload.audio_url ? 'speaking' : 'idle', transcript: cleanText, responseText };
-  if (parsed.emotion) liveState.emotion = parsed.emotion;
-  if (parsed.gestures.length > 0) liveState.gesture = parsed.gestures[0];
-  updateWidgetLiveState(liveState);
-  setChatStatus(payload.audio_url ? 'Speaking' : 'Idle');
-
-  if (payload.audio_url) {
-    const audio = new Audio(payload.audio_url);
-    audio.addEventListener('ended', () => {
-      updateWidgetLiveState({ phase: 'idle', transcript: cleanText, responseText });
-      setChatStatus('Idle');
+  try {
+    const response = await fetch(`${elements.bridgeUrl.value.trim()}/api/companion/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text: cleanText,
+        agent_url: runtimeProfile.llm.agentUrl,
+        model: runtimeProfile.llm.model,
+        system_prompt: buildCompositeSystemPrompt(runtimeProfile),
+        temperature: Number(runtimeProfile.llm.temperature),
+        max_response_sentences: runtimeProfile.llm.maxResponseSentences,
+        max_response_chars: runtimeProfile.llm.maxResponseChars,
+        speak: runtimeProfile.tts.autoSpeak,
+        tts_provider: runtimeProfile.tts.provider,
+        tts_voice: runtimeProfile.tts.voice,
+        device_id: `desktop-companion:${runtimeProfile.id}`,
+      }),
     });
-    audio.play().catch(() => {
-      updateWidgetLiveState({ phase: 'idle', transcript: cleanText, responseText });
-      setChatStatus('Idle');
-    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    const payload = await response.json();
+    const rawResponse = payload.response_text || payload.error || 'Nessuna risposta';
+    const parsed = parseEmotionAndGestures(rawResponse);
+    const responseText = parsed.cleanText || rawResponse;
+    const nextMessages = [...pendingMessages, { role: 'assistant', text: responseText, ts: new Date().toISOString() }].slice(-24);
+
+    if (!fromVoice) {
+      elements.chatInput.value = '';
+    }
+
+    renderChatLog(nextMessages);
+    await persistRecentMessages(nextMessages);
+
+    const liveState = { phase: payload.audio_url ? 'speaking' : 'idle', transcript: cleanText, responseText };
+    if (parsed.emotion) liveState.emotion = parsed.emotion;
+    if (parsed.gestures.length > 0) liveState.gesture = parsed.gestures[0];
+    updateWidgetLiveState(liveState);
+    setChatStatus(payload.audio_url ? 'Speaking' : 'Idle');
+
+    if (payload.audio_url) {
+      const audio = new Audio(payload.audio_url);
+      audio.addEventListener('ended', () => {
+        updateWidgetLiveState({ phase: 'idle', transcript: cleanText, responseText });
+        setChatStatus('Idle');
+      });
+      audio.play().catch(() => {
+        updateWidgetLiveState({ phase: 'idle', transcript: cleanText, responseText });
+        setChatStatus('Idle');
+      });
+    }
+  } catch (error) {
+    if (!fromVoice) {
+      elements.chatInput.value = originalInputValue;
+    }
+    setChatStatus(`Errore chat: ${error.message || error}`);
+    updateWidgetLiveState({ phase: 'error', transcript: cleanText, responseText: `Errore chat: ${error.message || error}` });
   }
 }
 
-async function assignAvatarFile(kind) {
-  const profile = activeProfile();
-  if (!profile) return;
-  if (!requirePermission(profile.permissions?.fileAccess, 'Accesso file avatar')) return;
-  const filePath = await window.gemcodeCompanion.pickAvatarFile(kind);
-  if (!filePath) return;
-  const snapshot = await window.gemcodeCompanion.updateProfile(profile.id, {
-    avatar: {
-      ...profile.avatar,
-      [kind]: filePath,
-    },
-  });
-  renderSnapshot(snapshot);
-}
-
-async function applyAvatarBundle(item) {
-  const profile = activeProfile();
-  if (!profile) return;
-  if (!requirePermission(profile.permissions?.fileAccess, 'Applicazione preset avatar')) return;
-  const avatarUpdate = {
-    ...profile.avatar,
-    name: item.name,
-  };
-  if (item.sceneFile) {
-    avatarUpdate.sceneFile = item.sceneFile;
-  }
-  if (item.baseImage !== undefined) avatarUpdate.baseImage = item.baseImage;
-  if (item.blinkImage !== undefined) avatarUpdate.blinkImage = item.blinkImage;
-  if (item.mouthOpenImage !== undefined) avatarUpdate.mouthOpenImage = item.mouthOpenImage;
-  if (item.auraImage !== undefined) avatarUpdate.auraImage = item.auraImage;
-  if (item.primaryModel !== undefined) avatarUpdate.primaryModel = item.primaryModel;
-  const snapshot = await window.gemcodeCompanion.updateProfile(profile.id, {
-    name: elements.profileName.value.trim() || profile.name,
-    identity: {
-      ...profile.identity,
-      avatarName: elements.avatarName.value.trim() || item.name,
-    },
-    avatar: avatarUpdate,
-  });
-  renderSnapshot(snapshot);
-  renderQuickAvatarMenu(state.quickAvatars);
-}
-
-async function applyQuickAvatarSelection() {
-  const selected = state.quickAvatars.find(item => item.sceneFile === elements.quickAvatarSelect.value);
-  if (!selected) return;
-  elements.quickAvatarMeta.textContent = `${selected.name}${selected.characterName ? ` · ${selected.characterName}` : ''} · ${selected.compatibility}`;
-  await applyAvatarBundle(selected);
-  setChatStatus(`Preset applicato: ${selected.name}`);
-}
+/* ─── Scan & Health ─── */
 
 async function scanAvatarLibrary(rootOverride) {
   if (!requirePermission(activeProfile()?.permissions?.fileAccess, 'Scansione libreria avatar')) return;
-  elements.avatarLibraryResults.innerHTML = '<div class="empty-state">Scansione in corso...</div>';
+  elements.characterGrid.textContent = '';
+  const scanning = document.createElement('div');
+  scanning.className = 'empty-state';
+  scanning.textContent = 'Scansione in corso...';
+  elements.characterGrid.appendChild(scanning);
+
   const targetRoot = rootOverride || elements.avatarLibraryRoot.value.trim() || elements.avatarLibraryRootLabel.textContent || 'D:\\';
   const payload = await window.gemcodeCompanion.scanAvatarLibrary(targetRoot);
-  renderAvatarLibrary(payload.items || [], payload.rootPath || targetRoot);
+  const items = payload.items || [];
+  state.avatarLibrary = items;
+  elements.avatarLibraryRootLabel.textContent = payload.rootPath || targetRoot;
+  renderCharacterGrid(items);
 }
 
 async function loadQuickAvatarMenu() {
   const payload = await window.gemcodeCompanion.listQuickVamAvatars();
   renderQuickAvatarMenu(payload.items || []);
+}
+
+/* ─── VAM Package Scanner ─── */
+
+let _activePkgCategory = 'character';
+let _vamPackagesData = {};
+
+async function scanVamPackages() {
+  const bridgeUrl = elements.bridgeUrl.value.trim();
+  const statusEl = $('packageScanStatus');
+  const gridEl = $('packageGrid');
+  statusEl.textContent = 'Scansione in corso...';
+  gridEl.innerHTML = '';
+
+  try {
+    const response = await fetch(`${bridgeUrl}/api/vam/packages`);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    _vamPackagesData = await response.json();
+
+    // Update counters
+    for (const cat of ['character', 'clothing', 'hair', 'morph']) {
+      const countEl = $('pkgCount' + cat.charAt(0).toUpperCase() + cat.slice(1));
+      if (countEl) countEl.textContent = String((_vamPackagesData[cat] || []).length);
+    }
+
+    statusEl.textContent = `${_vamPackagesData.total || 0} pacchetti trovati · ${_vamPackagesData.scanned_at || ''}`;
+    renderPackageGrid(_activePkgCategory);
+  } catch (err) {
+    statusEl.textContent = `Errore: ${err.message}`;
+    gridEl.innerHTML = '<div class="empty-state">Bridge non raggiungibile. Avvia il voice bridge.</div>';
+  }
+}
+
+function renderPackageGrid(category) {
+  const gridEl = $('packageGrid');
+  const items = _vamPackagesData[category] || [];
+  gridEl.innerHTML = '';
+
+  if (!items.length) {
+    gridEl.innerHTML = '<div class="empty-state">Nessun pacchetto in questa categoria.</div>';
+    return;
+  }
+
+  for (const pkg of items) {
+    const card = document.createElement('div');
+    card.className = 'package-card';
+    const itemsHtml = (pkg.items && pkg.items.length)
+      ? `<div class="pkg-items">${pkg.items.length} item: ${pkg.items.slice(0, 3).map(i => escapeHtml(i)).join(', ')}${pkg.items.length > 3 ? '...' : ''}</div>`
+      : '';
+    const descHtml = pkg.description
+      ? `<div class="pkg-desc">${escapeHtml(pkg.description)}</div>`
+      : '';
+    card.innerHTML = `<h4>${escapeHtml(pkg.name)}</h4>
+      <span class="pkg-creator">${escapeHtml(pkg.creator)}</span>
+      ${descHtml}
+      <span class="pkg-size">${pkg.size_mb} MB · ${escapeHtml(pkg.file)}</span>
+      ${itemsHtml}`;
+    gridEl.appendChild(card);
+  }
 }
 
 async function refreshBridgeHealth() {
@@ -762,6 +1332,8 @@ async function refreshBridgeHealth() {
   }
 }
 
+/* ─── Events ─── */
+
 function bindEvents() {
   elements.temperature.addEventListener('input', () => setSliderBadge(elements.temperature, elements.temperatureValue));
   elements.widgetWidth.addEventListener('input', () => setSliderBadge(elements.widgetWidth, elements.widgetWidthValue, ' px'));
@@ -772,9 +1344,8 @@ function bindEvents() {
   elements.focusWidgetButton.addEventListener('click', () => window.gemcodeCompanion.focusWidget());
   elements.saveAppButton.addEventListener('click', () => void saveAppSettings());
   elements.saveProfileButton.addEventListener('click', () => void saveProfile());
-  elements.quickAvatarSelect.addEventListener('change', () => {
-    void applyQuickAvatarSelection();
-  });
+
+  elements.quickAvatarSelect.addEventListener('change', () => void applyQuickAvatarSelection());
 
   elements.profileSelect.addEventListener('change', async () => {
     const snapshot = await window.gemcodeCompanion.setActiveProfile(elements.profileSelect.value);
@@ -835,13 +1406,27 @@ function bindEvents() {
   });
 
   elements.scanAvatarLibraryButton.addEventListener('click', () => void scanAvatarLibrary());
+
   elements.clickThrough.addEventListener('change', async () => {
     await window.gemcodeCompanion.toggleClickThrough(elements.clickThrough.checked);
   });
 
-  document.querySelectorAll('.avatar-picker').forEach(button => {
-    button.addEventListener('click', () => {
-      void assignAvatarFile(button.dataset.avatarKind);
+  // Character panel tab switching
+  document.querySelectorAll('.char-tab').forEach(tab => {
+    tab.addEventListener('click', () => switchCharTab(tab.dataset.charTab));
+  });
+
+  // Preset save
+  elements.savePresetButton.addEventListener('click', () => void saveCurrentPreset());
+
+  // VAM package scanner
+  const scanPkgBtn = $('scanVamPackagesButton');
+  if (scanPkgBtn) scanPkgBtn.addEventListener('click', () => void scanVamPackages());
+  document.querySelectorAll('.pkg-filter').forEach(btn => {
+    btn.addEventListener('click', () => {
+      _activePkgCategory = btn.dataset.pkgCat;
+      document.querySelectorAll('.pkg-filter').forEach(b => b.classList.toggle('active', b === btn));
+      renderPackageGrid(_activePkgCategory);
     });
   });
 
@@ -862,21 +1447,56 @@ function bindEvents() {
   });
 }
 
+/* ─── Init ─── */
+
 async function init() {
   bindElements();
   bindEvents();
   renderSnapshot(await window.gemcodeCompanion.getSettings());
   await loadQuickAvatarMenu();
   await scanAvatarLibrary(state.snapshot?.app?.avatarLibraryRoot);
+  await renderSavedPresets();
   await refreshBridgeHealth();
   state.bridgeHealthTimer = window.setInterval(refreshBridgeHealth, 10000);
+
+  // Restore character data if profile has a preset with sourceScene
+  const profile = activeProfile();
+  if (profile?.characterPreset?.sourceScene) {
+    try {
+      const charData = await window.gemcodeCompanion.getCharacterData(profile.characterPreset.sourceScene);
+      state.characterData = charData;
+      renderOutfitPanel(charData, profile.characterPreset);
+      renderMorphPanel(charData, profile.characterPreset);
+      updateCharPreviewBar(charData, profile.characterPreset);
+    } catch (err) {
+      console.warn('Could not restore character data:', err);
+    }
+  }
+
+  // Load skin packages
+  try {
+    const catalog = await window.gemcodeCompanion.getVamAssetCatalog();
+    if (catalog?.characters) {
+      renderSkinPackGrid(catalog.characters);
+    }
+  } catch (err) {
+    console.warn('Could not load skin packs:', err);
+  }
+
   window.gemcodeCompanion.onSettingsUpdated(snapshot => {
     renderSnapshot(snapshot);
     renderQuickAvatarMenu(state.quickAvatars);
   });
 }
 
+window.addEventListener('error', (e) => {
+  console.error(`[GLOBAL ERROR] ${e.message} at ${e.filename}:${e.lineno}:${e.colno}`);
+});
+window.addEventListener('unhandledrejection', (e) => {
+  console.error(`[UNHANDLED REJECTION] ${e.reason}`);
+});
+
 init().catch(error => {
-  console.error(error);
+  console.error(`[INIT ERROR] ${error.stack || error.message || error}`);
   elements.chatStatus.textContent = `Errore init: ${error.message}`;
 });

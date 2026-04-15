@@ -99,6 +99,11 @@ speaker:
     sample_rate: 48000
     bits_per_sample: 16
 
+rtttl:
+  id: wake_feedback_tone
+  speaker: announcement_speaker
+  gain: 0.25
+
 audio_dac:
   - platform: aic3204
     id: aic3204_dac
@@ -185,6 +190,7 @@ micro_wake_word:
     - model: hey_jarvis
     - model: hey_mycroft
   on_wake_word_detected:
+    - script.execute: play_wake_detected_feedback
     - voice_assistant.start:
         wake_word: !lambda return wake_word;
 
@@ -331,6 +337,22 @@ script:
           blue: 100%
           brightness: 60%
           effect: none
+  - id: play_wake_detected_feedback
+    mode: restart
+    then:
+      - light.turn_on:
+          id: led_ring
+          red: 0%
+          green: 100%
+          blue: 10%
+          brightness: 85%
+          effect: none
+      - rtttl.stop:
+          id: wake_feedback_tone
+      - rtttl.play:
+          id: wake_feedback_tone
+          rtttl: "wakeok:d=32,o=6,b=180:e,g"
+      - delay: 140ms
   - id: start_wake_word
     then:
       - if:

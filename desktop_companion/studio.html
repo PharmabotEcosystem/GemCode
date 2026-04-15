@@ -355,62 +355,103 @@
         </div>
       </section>
 
-      <section class="main-card avatar-card">
+      <section class="main-card character-card">
         <div class="section-head">
           <div>
-            <h2>Avatar bundle</h2>
-            <p>File scena VAM, modello 3D e layer immagini per il profilo attivo.</p>
-          </div>
-        </div>
-        <div class="avatar-grid">
-          <div class="avatar-slot">
-            <span>Scena VAM</span>
-            <button data-avatar-kind="sceneFile" class="secondary-button avatar-picker">Scegli file</button>
-            <code id="sceneFilePath"></code>
-          </div>
-          <div class="avatar-slot">
-            <span>Modello 3D</span>
-            <button data-avatar-kind="primaryModel" class="secondary-button avatar-picker">Scegli file</button>
-            <code id="primaryModelPath"></code>
-          </div>
-          <div class="avatar-slot">
-            <span>Base</span>
-            <button data-avatar-kind="baseImage" class="secondary-button avatar-picker">Scegli file</button>
-            <code id="baseImagePath"></code>
-          </div>
-          <div class="avatar-slot">
-            <span>Blink</span>
-            <button data-avatar-kind="blinkImage" class="secondary-button avatar-picker">Scegli file</button>
-            <code id="blinkImagePath"></code>
-          </div>
-          <div class="avatar-slot">
-            <span>Mouth open</span>
-            <button data-avatar-kind="mouthOpenImage" class="secondary-button avatar-picker">Scegli file</button>
-            <code id="mouthOpenImagePath"></code>
-          </div>
-          <div class="avatar-slot">
-            <span>Aura</span>
-            <button data-avatar-kind="auraImage" class="secondary-button avatar-picker">Scegli file</button>
-            <code id="auraImagePath"></code>
-          </div>
-        </div>
-      </section>
-
-      <section class="main-card avatar-library-card">
-        <div class="section-head">
-          <div>
-            <h2>Libreria Preset VAM</h2>
-            <p>Scansione automatica delle scene VAM con avatar Person per il profilo attivo.</p>
+            <h2>Personaggio</h2>
+            <p>Seleziona, personalizza e salva il look del tuo avatar.</p>
           </div>
           <div class="library-actions">
-            <button id="scanAvatarLibraryButton" class="primary-button">Scansiona</button>
+            <button id="scanAvatarLibraryButton" class="primary-button">Scansiona scene</button>
           </div>
         </div>
-        <div class="library-headline">
-          <span id="avatarLibraryRootLabel"></span>
-          <span id="avatarLibraryCount"></span>
+
+        <nav class="char-tabs">
+          <button class="char-tab active" data-char-tab="select">Scegli personaggio</button>
+          <button class="char-tab" data-char-tab="outfit">Vestiario e aspetto</button>
+          <button class="char-tab" data-char-tab="body">Forma del corpo</button>
+          <button class="char-tab" data-char-tab="presets">Preset salvati</button>
+          <button class="char-tab" data-char-tab="packages">Pacchetti VAM</button>
+        </nav>
+
+        <!-- Tab 1: Scegli personaggio -->
+        <div class="char-tab-panel active" id="charTabSelect" data-char-panel="select">
+          <div class="library-headline">
+            <span id="avatarLibraryRootLabel"></span>
+            <span id="avatarLibraryCount"></span>
+          </div>
+          <div id="characterGrid" class="character-grid">
+            <div class="empty-state">Premi "Scansiona scene" per trovare personaggi VAM.</div>
+          </div>
         </div>
-        <div id="avatarLibraryResults" class="avatar-library-results"></div>
+
+        <!-- Tab 2: Vestiario e aspetto -->
+        <div class="char-tab-panel" id="charTabOutfit" data-char-panel="outfit">
+          <div id="outfitActiveCharacter" class="outfit-active-character">
+            <span class="outfit-char-label">Nessun personaggio selezionato</span>
+          </div>
+
+          <div id="skinPackSection" class="outfit-section">
+            <h3 class="outfit-section-head">Skin pack</h3>
+            <div id="skinPackGrid" class="skin-pack-grid">
+              <div class="meta-note">Scansione skin pack disponibili...</div>
+            </div>
+          </div>
+
+          <div id="outfitCategories" class="outfit-categories">
+            <div class="empty-state">Seleziona un personaggio per vedere le opzioni di vestiario.</div>
+          </div>
+        </div>
+
+        <!-- Tab 3: Forma del corpo -->
+        <div class="char-tab-panel" id="charTabBody" data-char-panel="body">
+          <div id="morphActiveCharacter" class="outfit-active-character">
+            <span class="outfit-char-label">Nessun personaggio selezionato</span>
+          </div>
+          <div id="morphCategories" class="morph-categories">
+            <div class="empty-state">Seleziona un personaggio per vedere i morph disponibili.</div>
+          </div>
+        </div>
+
+        <!-- Tab 4: Preset salvati -->
+        <div class="char-tab-panel" id="charTabPresets" data-char-panel="presets">
+          <div class="preset-actions">
+            <input id="presetSaveName" type="text" placeholder="Nome preset..." />
+            <button id="savePresetButton" class="primary-button">Salva attuale</button>
+          </div>
+          <div id="savedPresetList" class="saved-preset-list">
+            <div class="empty-state">Nessun preset salvato.</div>
+          </div>
+        </div>
+
+        <!-- Tab 5: Pacchetti VAM -->
+        <div class="char-tab-panel" id="charTabPackages" data-char-panel="packages">
+          <div class="package-scanner-controls">
+            <button id="scanVamPackagesButton" class="primary-button">Scansiona pacchetti</button>
+            <span id="packageScanStatus" class="meta-note"></span>
+          </div>
+          <div class="package-filter-bar">
+            <button class="pkg-filter active" data-pkg-cat="character">Personaggi <span id="pkgCountCharacter">0</span></button>
+            <button class="pkg-filter" data-pkg-cat="clothing">Vestiti <span id="pkgCountClothing">0</span></button>
+            <button class="pkg-filter" data-pkg-cat="hair">Capelli <span id="pkgCountHair">0</span></button>
+            <button class="pkg-filter" data-pkg-cat="morph">Morph <span id="pkgCountMorph">0</span></button>
+          </div>
+          <div id="packageGrid" class="package-grid">
+            <div class="empty-state">Premi "Scansiona pacchetti" per aggiornare la lista.</div>
+          </div>
+        </div>
+
+        <!-- Preview compatta -->
+        <div class="char-preview-bar">
+          <div id="charPreviewThumb" class="char-preview-thumb">
+            <div class="avatar-preview-fallback-core small"></div>
+          </div>
+          <div id="charPreviewMeta" class="char-preview-meta">
+            <span class="char-preview-name">—</span>
+            <span class="char-preview-details">Seleziona un personaggio per iniziare</span>
+          </div>
+          <div id="charPreviewOutfitSummary" class="char-preview-outfit-summary"></div>
+        </div>
       </section>
 
       <section class="main-card chat-card">

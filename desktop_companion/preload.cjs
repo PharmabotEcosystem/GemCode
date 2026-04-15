@@ -14,10 +14,17 @@ contextBridge.exposeInMainWorld('gemcodeCompanion', {
   pickAvatarRoot: () => ipcRenderer.invoke('companion:pick-avatar-root'),
   scanAvatarLibrary: rootPath => ipcRenderer.invoke('companion:scan-avatar-library', rootPath),
   listQuickVamAvatars: () => ipcRenderer.invoke('companion:list-quick-vam-avatars'),
+  getVamAssetCatalog: () => ipcRenderer.invoke('companion:get-vam-asset-catalog'),
+  resolveVamCharacterPackage: packagePath => ipcRenderer.invoke('companion:resolve-vam-character-package', packagePath),
   toFileUrl: filePath => ipcRenderer.invoke('companion:to-file-url', filePath),
   focusWidget: () => ipcRenderer.invoke('companion:focus-widget'),
   openStudio: () => ipcRenderer.invoke('companion:open-studio'),
   toggleClickThrough: enabled => ipcRenderer.invoke('companion:toggle-click-through', enabled),
+  getCharacterData: sceneFilePath => ipcRenderer.invoke('companion:get-character-data', sceneFilePath),
+  saveCharacterPreset: (name, presetData) => ipcRenderer.invoke('companion:save-character-preset', name, presetData),
+  listCharacterPresets: () => ipcRenderer.invoke('companion:list-character-presets'),
+  loadCharacterPreset: fileName => ipcRenderer.invoke('companion:load-character-preset', fileName),
+  deleteCharacterPreset: fileName => ipcRenderer.invoke('companion:delete-character-preset', fileName),
   updateWidgetLiveState: payload => ipcRenderer.send('companion:update-widget-live-state', payload),
   onSettingsUpdated: callback => {
     const handler = (_event, payload) => callback(payload);

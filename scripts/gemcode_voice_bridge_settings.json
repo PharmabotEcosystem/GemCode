@@ -10,7 +10,7 @@
   "device_id": "box3",
   "device_name": "Home Assistant Voice PE",
   "device_mode": "ptt",
-  "wake_word_label": "GEMMA",
-  "wake_word_model": "placeholder - serve un modello GEMMA dedicato",
-  "wake_word_notes": "Per una vera wake word GEMMA serve un modello micro_wake_word dedicato."
+  "wake_word_label": "OK GEMMA",
+  "wake_word_model": "placeholder - serve un modello OK GEMMA dedicato",
+  "wake_word_notes": "Per una vera wake word OK GEMMA serve un modello micro_wake_word dedicato."
 }

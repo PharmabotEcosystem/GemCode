@@ -1,8 +1,13 @@
 const { app, BrowserWindow, dialog, ipcMain, screen } = require('electron');
+const AdmZip = require('adm-zip');
 const fs = require('fs');
 const path = require('path');
 
 const APP_ID = 'gemcode.desktop.companion';
+const DEBUG_LOG = path.join(__dirname, 'debug.log');
+try { fs.writeFileSync(DEBUG_LOG, `--- GemCode debug start ${new Date().toISOString()} ---\n`); } catch (_) {}
+process.on('uncaughtException', (err) => { try { fs.appendFileSync(DEBUG_LOG, `[MAIN] uncaughtException: ${err.stack || err}\n`); } catch (_) {} });
+process.on('unhandledRejection', (reason) => { try { fs.appendFileSync(DEBUG_LOG, `[MAIN] unhandledRejection: ${reason}\n`); } catch (_) {} });
 const STORE_SCHEMA_VERSION = 2;
 
 const DEFAULT_WIDGET_SETTINGS = {
@@ -19,15 +24,34 @@ const DEFAULT_WIDGET_SETTINGS = {
   y: null,
 };
 
+const DEFAULT_CHARACTER_PRESET = {
+  sourceScene: 'D:\\Saves\\scene\\SPQR\\lana.json',
+  characterBase: 'Tara',
+  skinPackage: '',
+  clothing: [],
+  hair: [],
+  morphOverrides: {},
+  skinColor: { h: 0, s: 0, v: 1 },
+};
+
 const DEFAULT_AVATAR_SETTINGS = {
   name: 'Lana',
   baseImage: '',
   blinkImage: '',
   mouthOpenImage: '',
   auraImage: '',
-  primaryModel: 'D:\\Avatar3D\\j.obj',
+  vamPackagePath: '',
+  primaryModel: '',
   sceneFile: 'D:\\Saves\\scene\\SPQR\\lana.json',
   idleAnimation: 'breathe',
+  framingZoom: 1,
+  framingOffsetY: 0,
+  layerLayout: {
+    base: { offsetX: 0, offsetY: 0, scale: 1 },
+    blink: { offsetX: 0, offsetY: 0, scale: 1 },
+    mouth: { offsetX: 0, offsetY: 0, scale: 1 },
+    aura: { offsetX: 0, offsetY: 0, scale: 1 },
+  },
 };
 
 const DEFAULT_PROFILE = {
@@ -46,6 +70,7 @@ const DEFAULT_PROFILE = {
     notes: '',
   },
   avatar: DEFAULT_AVATAR_SETTINGS,
+  characterPreset: deepClone(DEFAULT_CHARACTER_PRESET),
   llm: {
     agentUrl: 'http://localhost:11434/api/chat',
     model: 'gemma4',
@@ -113,6 +138,20 @@ const VAM_SCENE_ROOTS = [
   'D:\\Saves\\scene',
   'D:\\Saves\\Person',
 ];
+const VAM_HAIR_ROOTS = [
+  'D:\\Custom\\Hair\\Female',
+  'D:\\Custom\\Hair\\Male',
+];
+const VAM_PERSON_PRESET_ROOTS = [
+  'D:\\Custom\\Atom\\Person\\General',
+  'D:\\Custom\\Atom\\Person\\PluginPresets',
+];
+const VAM_CLOTHING_ROOTS = [
+  'D:\\Custom\\Clothing\\Female',
+  'D:\\Custom\\Clothing\\Male',
+  'D:\\Custom\\Clothing\\Neutral',
+];
+const VAM_PACKAGE_ROOT = 'D:\\AddonPackages';
 const SKIP_FOLDERS = new Set([
   '$RECYCLE.BIN',
   'System Volume Information',
@@ -130,6 +169,8 @@ const SKIP_FOLDERS = new Set([
 let widgetWindow = null;
 let studioWindow = null;
 let store = null;
+let vamAssetCatalogCache = null;
+const vamPackageResolutionCache = new Map();
 
 function getStorePath() {
   return path.join(app.getPath('userData'), 'gemcode-companion-settings.json');
@@ -248,6 +289,10 @@ function normalizeProfile(profile, index = 0) {
   merged.memory.recentMessages = normalizeRecentMessages(merged.memory.recentMessages);
   merged.metadata.createdAt = merged.metadata.createdAt || new Date().toISOString();
   merged.metadata.updatedAt = new Date().toISOString();
+
+  // No 3D model in widget — VAM handles rendering
+  merged.avatar.primaryModel = '';
+
   return merged;
 }
 
@@ -324,6 +369,7 @@ function buildRuntimeSettings(profile = getActiveProfile()) {
     permissions: deepClone(profile.permissions),
     memory: deepClone(profile.memory),
     widget: deepClone(profile.widget),
+    characterPreset: deepClone(profile.characterPreset),
     agentUrl: profile.llm.agentUrl,
     model: profile.llm.model,
     systemPrompt: profile.llm.systemPrompt,
@@ -373,11 +419,20 @@ function createWidgetWindow() {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
+      autoplayPolicy: 'no-user-gesture-required',
     },
   });
 
   widgetWindow.loadFile(path.join(__dirname, 'widget.html'));
   widgetWindow.setMenuBarVisibility(false);
+  widgetWindow.webContents.on('console-message', (event) => {
+    const fs = require('fs');
+    fs.appendFileSync(path.join(__dirname, 'debug.log'), `[Widget:${event.level}] ${event.message}\n`);
+  });
+  widgetWindow.webContents.on('render-process-gone', (event, details) => {
+    const fs = require('fs');
+    fs.appendFileSync(path.join(__dirname, 'debug.log'), `[Widget] CRASHED: ${JSON.stringify(details)}\n`);
+  });
 
   widgetWindow.on('move', () => {
     if (!widgetWindow) return;
@@ -421,6 +476,14 @@ function createStudioWindow() {
   });
 
   studioWindow.loadFile(path.join(__dirname, 'studio.html'));
+  studioWindow.webContents.on('console-message', (event) => {
+    const fs = require('fs');
+    fs.appendFileSync(path.join(__dirname, 'debug.log'), `[Studio:${event.level}] ${event.message}\n`);
+  });
+  studioWindow.webContents.on('render-process-gone', (event, details) => {
+    const fs = require('fs');
+    fs.appendFileSync(path.join(__dirname, 'debug.log'), `[Studio] CRASHED: ${JSON.stringify(details)}\n`);
+  });
   studioWindow.on('closed', () => {
     studioWindow = null;
   });
@@ -477,6 +540,480 @@ function safeReaddir(dirPath) {
   }
 }
 
+function toArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function normalizeLabel(value) {
+  return String(value || '')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function classifyClothingCategory(input) {
+  const text = normalizeLabel(input).toLowerCase();
+  if (!text) return 'outfit';
+  if (/(shoe|boot|heel|sandal|sole|sneaker|footwear)/.test(text)) return 'scarpe';
+  if (/(pant|jean|trouser|legging|short|brief|bottom|bikini bottom)/.test(text)) return 'pantaloni';
+  if (/(skirt|dress|gown)/.test(text)) return 'gonna';
+  if (/(sock|stocking|tight|legging|pantyhose)/.test(text)) return 'calze';
+  if (/(bra|panty|panties|underwear|lingerie|bikini|thong|intim)/.test(text)) return 'intimo';
+  if (/(shirt|top|jacket|coat|hoodie|corset|sweater|sleeve|blouse)/.test(text)) return 'top';
+  if (/(glove|bracelet|ring|earring|necklace|choker|pin|ornament|hairpin|belt|mask|glasses|goggle|accessory|flower)/.test(text)) return 'accessori';
+  if (/(nail|eye|eyeball|glitter|makeup|lash|brow|tattoo)/.test(text)) return 'viso e dettagli';
+  return 'outfit';
+}
+
+function classifyMorphCategory(name) {
+  const text = normalizeLabel(name).toLowerCase();
+  if (!text) return 'altro';
+  if (/(eye|eyelid|iris|pupil|lash|brow)/.test(text)) return 'occhi';
+  if (/(nose|nostril)/.test(text)) return 'naso';
+  if (/(mouth|lip|tongue|smile|frown|jaw|teeth|chin)/.test(text)) return 'bocca';
+  if (/(skin|tan|gloss|subsurface|makeup|tattoo|freckle)/.test(text)) return 'pelle';
+  if (/(breast|nipple|boob)/.test(text)) return 'seno';
+  if (/(waist|hip|thigh|leg|arm|shoulder|body|torso|abdomen|butt|glute|physique|scale|muscle)/.test(text)) return 'fisico';
+  if (/(hand|finger|thumb|pose|grasp|salute|fist)/.test(text)) return 'mani e posa';
+  if (/(face|cheek|forehead|ear|head)/.test(text)) return 'volto';
+  return 'altro';
+}
+
+function pickDisplayNameFromPath(filePath) {
+  return normalizeLabel(path.basename(String(filePath || ''), path.extname(String(filePath || ''))));
+}
+
+function pickDisplayNameFromVarFile(filePath) {
+  const stem = path.basename(String(filePath || ''), '.var');
+  const parts = stem.split('.').filter(Boolean);
+  if (parts.length >= 2) {
+    return normalizeLabel(parts.slice(1, -1).join(' ') || parts[1]);
+  }
+  return normalizeLabel(stem);
+}
+
+function sanitizeCacheName(value) {
+  return String(value || '')
+    .replace(/[^a-zA-Z0-9._-]+/g, '_')
+    .replace(/^_+|_+$/g, '') || 'package';
+}
+
+function ensureDirectory(dirPath) {
+  fs.mkdirSync(dirPath, { recursive: true });
+  return dirPath;
+}
+
+function getVamPackageCacheRoot() {
+  return ensureDirectory(path.join(app.getPath('userData'), 'vam-package-cache'));
+}
+
+function findPreferredVarEntry(entries, patterns) {
+  for (const pattern of patterns) {
+    const match = entries.find(entry => pattern.test(entry.entryName));
+    if (match) return match;
+  }
+  return null;
+}
+
+function extractVarEntryToCache(zip, entry, targetDir) {
+  if (!entry) return '';
+  const targetPath = path.join(targetDir, path.basename(entry.entryName));
+  if (!fs.existsSync(targetPath)) {
+    fs.writeFileSync(targetPath, entry.getData());
+  }
+  return targetPath;
+}
+
+function resolveVarCharacterPackage(packagePath) {
+  const normalizedPath = String(packagePath || '').trim();
+  if (!normalizedPath || !fs.existsSync(normalizedPath)) {
+    return null;
+  }
+  const stat = fs.statSync(normalizedPath);
+  const cacheKey = `${normalizedPath}:${stat.mtimeMs}`;
+  if (vamPackageResolutionCache.has(cacheKey)) {
+    return vamPackageResolutionCache.get(cacheKey);
+  }
+
+  try {
+    const zip = new AdmZip(normalizedPath);
+    const entries = zip.getEntries();
+    const cacheDir = ensureDirectory(path.join(getVamPackageCacheRoot(), sanitizeCacheName(path.basename(normalizedPath, '.var'))));
+    const faceDiffuse = findPreferredVarEntry(entries, [
+      /Textures\/.+\/(?:FACE D\d*|G2_Face|FaceG|faceD|HeadD)[^/]*\.(?:png|jpe?g|webp)$/i,
+    ]);
+    const faceNormal = findPreferredVarEntry(entries, [
+      /Textures\/.+\/(?:FACE N\d*|faceN|HeadN)[^/]*\.(?:png|jpe?g|webp)$/i,
+    ]);
+    const torsoDiffuse = findPreferredVarEntry(entries, [
+      /Textures\/.+\/(?:TORSO D[^/]*|G2_Torso|torsoD)[^/]*\.(?:png|jpe?g|webp)$/i,
+    ]);
+    const torsoNormal = findPreferredVarEntry(entries, [
+      /Textures\/.+\/(?:TORSO N[^/]*|torsoN)[^/]*\.(?:png|jpe?g|webp)$/i,
+    ]);
+    const limbsDiffuse = findPreferredVarEntry(entries, [
+      /Textures\/.+\/(?:LIMBS D[^/]*|G2_Limbs|limbsD)[^/]*\.(?:png|jpe?g|webp)$/i,
+    ]);
+    const limbsNormal = findPreferredVarEntry(entries, [
+      /Textures\/.+\/(?:LIMBS N[^/]*|limbsN)[^/]*\.(?:png|jpe?g|webp)$/i,
+    ]);
+    const previewEntry = faceDiffuse || torsoDiffuse || limbsDiffuse;
+    const presetEntry = findPreferredVarEntry(entries, [
+      /Custom\/Atom\/Person\/Appearance\/.+\.(?:vap|json)$/i,
+      /Custom\/Atom\/Person\/Skin\/.+\.(?:vap|json)$/i,
+      /Custom\/Atom\/Person\/General\/.+\.(?:vap|json)$/i,
+      /Saves\/Person\/.+\.(?:vap|json)$/i,
+    ]);
+
+    const resolved = {
+      packagePath: normalizedPath,
+      name: pickDisplayNameFromVarFile(normalizedPath),
+      presetEntry: presetEntry?.entryName || '',
+      previewImage: extractVarEntryToCache(zip, previewEntry, cacheDir),
+      materials: {
+        headDiffuse: extractVarEntryToCache(zip, faceDiffuse, cacheDir),
+        headNormal: extractVarEntryToCache(zip, faceNormal, cacheDir),
+        bodyDiffuse: extractVarEntryToCache(zip, torsoDiffuse, cacheDir),
+        bodyNormal: extractVarEntryToCache(zip, torsoNormal, cacheDir),
+        limbsDiffuse: extractVarEntryToCache(zip, limbsDiffuse, cacheDir),
+        limbsNormal: extractVarEntryToCache(zip, limbsNormal, cacheDir),
+      },
+    };
+    vamPackageResolutionCache.set(cacheKey, resolved);
+    return resolved;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeVarPackageOwner(filePath) {
+  const stem = path.basename(String(filePath || ''), '.var');
+  const parts = stem.split('.').filter(Boolean);
+  return parts.length >= 2 ? parts[0] : '';
+}
+
+function parseVamAssetEntry(entry, kind) {
+  const assetPathMatch = String(entry?.id || '').match(/:(\/Custom\/.+\.(?:vam|vmi))/i);
+  const assetPath = assetPathMatch ? assetPathMatch[1].replace(/\//g, '\\') : '';
+  const filePath = assetPath ? path.join('D:\\', assetPath.replace(/^\\/, '')) : '';
+  const sourceName = normalizeLabel(entry?.internalId || entry?.id || pickDisplayNameFromPath(filePath));
+  const displayName = sourceName.includes(':') ? normalizeLabel(sourceName.split(':').pop()) : sourceName;
+  const category = kind === 'hair' ? 'capelli' : classifyClothingCategory(`${displayName} ${filePath}`);
+  return {
+    name: displayName || pickDisplayNameFromPath(filePath),
+    source: sourceName,
+    path: filePath,
+    enabled: String(entry?.enabled || 'true') !== 'false',
+    category,
+  };
+}
+
+function summarizeMorphs(morphs) {
+  const summary = {
+    total: 0,
+    categories: {
+      occhi: 0,
+      naso: 0,
+      bocca: 0,
+      pelle: 0,
+      seno: 0,
+      fisico: 0,
+      'mani e posa': 0,
+      volto: 0,
+      altro: 0,
+    },
+  };
+  for (const morph of toArray(morphs)) {
+    const category = classifyMorphCategory(morph?.name || morph?.uid);
+    summary.total += 1;
+    summary.categories[category] = (summary.categories[category] || 0) + 1;
+  }
+  return summary;
+}
+
+function summarizeMaterials(materials) {
+  const first = toArray(materials)[0];
+  if (!first || typeof first !== 'object') {
+    return { total: 0, skinTone: '', textureHints: [] };
+  }
+  const hsv = first?.SubsurfaceColor || first?.subsurfaceColor || null;
+  const skinTone = hsv && typeof hsv === 'object'
+    ? `H ${Number(hsv.h ?? hsv.H ?? 0).toFixed(2)} · S ${Number(hsv.s ?? hsv.S ?? 0).toFixed(2)} · V ${Number(hsv.v ?? hsv.V ?? 0).toFixed(2)}`
+    : '';
+  const textureHints = Object.entries(first)
+    .filter(([key, value]) => /url|texture|diffuse|specular|normal/i.test(key) && value)
+    .map(([, value]) => path.basename(String(value)))
+    .slice(0, 6);
+  return {
+    total: toArray(materials).length,
+    skinTone,
+    textureHints,
+  };
+}
+
+function buildAppearanceSummary(geometry) {
+  const hair = toArray(geometry?.hair).map(entry => parseVamAssetEntry(entry, 'hair'));
+  const clothing = toArray(geometry?.clothing).map(entry => parseVamAssetEntry(entry, 'clothing'));
+  const clothingCategories = {};
+  for (const item of clothing) {
+    if (!clothingCategories[item.category]) clothingCategories[item.category] = [];
+    clothingCategories[item.category].push(item);
+  }
+  const morphs = summarizeMorphs(geometry?.morphs);
+  const materials = summarizeMaterials(geometry?.materials);
+  return {
+    hair,
+    clothing,
+    clothingCategories,
+    morphs,
+    materials,
+    counts: {
+      hair: hair.length,
+      clothing: clothing.length,
+      morphs: morphs.total,
+      materialSlots: materials.total,
+    },
+  };
+}
+
+function parseLocalPersonPreset(filePath) {
+  try {
+    const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    const pluginCount = raw && typeof raw.plugins === 'object' ? Object.keys(raw.plugins).length : 0;
+    return {
+      name: pickDisplayNameFromPath(filePath),
+      path: filePath,
+      presetType: String(raw?.id || path.extname(filePath).slice(1) || 'person-preset'),
+      pluginCount,
+    };
+  } catch {
+    return {
+      name: pickDisplayNameFromPath(filePath),
+      path: filePath,
+      presetType: path.extname(filePath).slice(1) || 'person-preset',
+      pluginCount: 0,
+    };
+  }
+}
+
+function scanLocalPersonPresetRoots(rootPaths, maxDepth = 4, maxItems = 120) {
+  const results = [];
+  const queue = rootPaths.filter(rootDir => fs.existsSync(rootDir)).map(rootDir => ({ dirPath: rootDir, depth: 0 }));
+  const visited = new Set();
+
+  while (queue.length > 0 && results.length < maxItems) {
+    const current = queue.shift();
+    if (!current || visited.has(current.dirPath)) continue;
+    visited.add(current.dirPath);
+    const entries = safeReaddir(current.dirPath);
+
+    for (const entry of entries) {
+      const fullPath = path.join(current.dirPath, entry.name);
+      if (entry.isDirectory()) {
+        if (current.depth < maxDepth && !SKIP_FOLDERS.has(entry.name)) {
+          queue.push({ dirPath: fullPath, depth: current.depth + 1 });
+        }
+        continue;
+      }
+      const ext = path.extname(entry.name).toLowerCase();
+      if (ext !== '.json' && ext !== '.vap') continue;
+      results.push(parseLocalPersonPreset(fullPath));
+      if (results.length >= maxItems) break;
+    }
+  }
+
+  return results;
+}
+
+function isLikelyCharacterVarPackage(filePath, entryNames, metrics) {
+  const name = path.basename(String(filePath || ''), '.var').toLowerCase();
+  const hasSavedPreset = entryNames.some(entry => /(?:^|\/)(?:saves\/person|custom\/atom\/person\/[^/]+\/).+\.(?:json|vap)$/i.test(entry));
+  if (hasSavedPreset && metrics.textureCount > 0) return true;
+  if (/(hair|pose|plugin|morph|texture|muscle|tanline|genital|clothing|outfit|heels|boots|dress|gloves)/.test(name)) {
+    return false;
+  }
+  return metrics.morphCount >= 4 && metrics.textureCount >= 3;
+}
+
+function scanVarCharacterPackages(packageRoot, maxItems = 160) {
+  if (!fs.existsSync(packageRoot)) {
+    return [];
+  }
+
+  const files = safeReaddir(packageRoot)
+    .filter(entry => !entry.isDirectory() && path.extname(entry.name).toLowerCase() === '.var')
+    .map(entry => path.join(packageRoot, entry.name));
+  const results = [];
+
+  for (const filePath of files) {
+    try {
+      const zip = new AdmZip(filePath);
+      const entryNames = zip.getEntries().map(entry => entry.entryName);
+      const metrics = {
+        morphCount: entryNames.filter(entry => /Custom\/Atom\/Person\/Morphs\/.+\.(?:vmb|vmi)$/i.test(entry)).length,
+        textureCount: entryNames.filter(entry => /Custom\/Atom\/Person\/Textures\/.+\.(?:png|jpe?g|webp)$/i.test(entry)).length,
+        presetCount: entryNames.filter(entry => /(?:^|\/)(?:Saves\/Person|Custom\/Atom\/Person\/[^/]+\/).+\.(?:json|vap)$/i.test(entry)).length,
+      };
+      if (!isLikelyCharacterVarPackage(filePath, entryNames, metrics)) {
+        continue;
+      }
+      results.push({
+        name: pickDisplayNameFromVarFile(filePath),
+        packageName: path.basename(filePath),
+        packageOwner: normalizeVarPackageOwner(filePath),
+        path: filePath,
+        morphCount: metrics.morphCount,
+        textureCount: metrics.textureCount,
+        presetCount: metrics.presetCount,
+        category: 'personaggio package',
+        previewImage: '',
+      });
+      if (results.length >= maxItems) break;
+    } catch {
+      continue;
+    }
+  }
+
+  return results.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function scanVamAssetRoots(rootPaths, kind, maxDepth = 5, maxItems = 120) {
+  const results = [];
+  const queue = rootPaths.filter(rootDir => fs.existsSync(rootDir)).map(rootDir => ({ dirPath: rootDir, depth: 0 }));
+  const visited = new Set();
+
+  while (queue.length > 0 && results.length < maxItems) {
+    const current = queue.shift();
+    if (!current || visited.has(current.dirPath)) continue;
+    visited.add(current.dirPath);
+    const entries = safeReaddir(current.dirPath);
+
+    for (const entry of entries) {
+      const fullPath = path.join(current.dirPath, entry.name);
+      if (entry.isDirectory()) {
+        if (current.depth < maxDepth && !SKIP_FOLDERS.has(entry.name)) {
+          queue.push({ dirPath: fullPath, depth: current.depth + 1 });
+        }
+        continue;
+      }
+      if (path.extname(entry.name).toLowerCase() !== '.vam') continue;
+      const category = kind === 'hair' ? 'capelli' : classifyClothingCategory(`${entry.name} ${fullPath}`);
+      results.push({
+        name: pickDisplayNameFromPath(fullPath),
+        category,
+        path: fullPath,
+        source: normalizeLabel(path.relative(kind === 'hair' ? 'D:\\Custom\\Hair' : 'D:\\Custom\\Clothing', fullPath)),
+      });
+      if (results.length >= maxItems) break;
+    }
+  }
+
+  return results;
+}
+
+function buildVamAssetCatalog() {
+  if (vamAssetCatalogCache && Date.now() - vamAssetCatalogCache.createdAt < 5 * 60 * 1000) {
+    return vamAssetCatalogCache.value;
+  }
+
+  const hair = scanVamAssetRoots(VAM_HAIR_ROOTS, 'hair', 5, 120);
+  const clothing = scanVamAssetRoots(VAM_CLOTHING_ROOTS, 'clothing', 5, 240);
+  const personPresets = scanLocalPersonPresetRoots(VAM_PERSON_PRESET_ROOTS, 4, 80);
+  const varCharacters = scanVarCharacterPackages(VAM_PACKAGE_ROOT, 180);
+  const clothingByCategory = {};
+  for (const item of clothing) {
+    if (!clothingByCategory[item.category]) clothingByCategory[item.category] = [];
+    clothingByCategory[item.category].push(item);
+  }
+  const value = {
+    counts: {
+      hair: hair.length,
+      clothing: clothing.length,
+      personPresets: personPresets.length,
+      varCharacters: varCharacters.length,
+    },
+    hair: hair.slice(0, 30),
+    personPresets: personPresets.slice(0, 24),
+    varCharacters: varCharacters.slice(0, 36),
+    clothingByCategory: Object.fromEntries(
+      Object.entries(clothingByCategory)
+        .sort((a, b) => b[1].length - a[1].length)
+        .map(([category, items]) => [category, items.slice(0, 18)])
+    ),
+  };
+  vamAssetCatalogCache = {
+    createdAt: Date.now(),
+    value,
+  };
+  return value;
+}
+
+function findFirstExistingFile(candidates) {
+  for (const candidate of candidates) {
+    if (candidate && fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return '';
+}
+
+function buildImageCandidates(dir, stems, extensions = ['.png', '.webp', '.jpg', '.jpeg']) {
+  const results = [];
+  for (const stem of stems) {
+    for (const ext of extensions) {
+      results.push(path.join(dir, `${stem}${ext}`));
+    }
+  }
+  return results;
+}
+
+function discoverPresetPortraitAssets(dir, baseName) {
+  const normalized = String(baseName || '').trim();
+  if (!normalized) {
+    return {
+      previewImage: '',
+      baseImage: '',
+      blinkImage: '',
+      mouthOpenImage: '',
+      auraImage: '',
+    };
+  }
+
+  const previewImage = findFirstExistingFile(buildImageCandidates(dir, [
+    normalized,
+    `${normalized}_preview`,
+    `${normalized}_portrait`,
+    `${normalized}_idle`,
+    `${normalized}_base`,
+  ]));
+  const blinkImage = findFirstExistingFile(buildImageCandidates(dir, [
+    `${normalized}_blink`,
+    `${normalized}_eyes_closed`,
+    `${normalized}_closed`,
+    `${normalized}_blink1`,
+  ]));
+  const mouthOpenImage = findFirstExistingFile(buildImageCandidates(dir, [
+    `${normalized}_mouth`,
+    `${normalized}_mouth_open`,
+    `${normalized}_talk`,
+    `${normalized}_speak`,
+    `${normalized}_openmouth`,
+  ]));
+  const auraImage = findFirstExistingFile(buildImageCandidates(dir, [
+    `${normalized}_aura`,
+    `${normalized}_glow`,
+    `${normalized}_fx`,
+  ]));
+
+  return {
+    previewImage,
+    baseImage: previewImage,
+    blinkImage,
+    mouthOpenImage,
+    auraImage,
+  };
+}
+
 function parseVamSceneFile(filePath) {
   try {
     const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
@@ -486,37 +1023,215 @@ function parseVamSceneFile(filePath) {
     if (!personAtom) return null;
 
     let characterName = '';
+    let appearance = null;
     if (Array.isArray(personAtom.storables)) {
       const geometry = personAtom.storables.find(s => s.id === 'geometry');
       if (geometry) {
         characterName = geometry.character || '';
+        appearance = buildAppearanceSummary(geometry);
       }
     }
 
     const dir = path.dirname(filePath);
     const baseName = path.basename(filePath, '.json');
-
-    let previewImage = '';
-    for (const ext of ['.jpg', '.png', '.webp']) {
-      const imgPath = path.join(dir, baseName + ext);
-      if (fs.existsSync(imgPath)) {
-        previewImage = imgPath;
-        break;
-      }
-    }
+    const portraitAssets = discoverPresetPortraitAssets(dir, baseName);
 
     return {
       name: baseName,
       sceneFile: filePath,
       folderPath: dir,
-      previewImage,
+      previewImage: portraitAssets.previewImage,
+      baseImage: portraitAssets.baseImage,
+      blinkImage: portraitAssets.blinkImage,
+      mouthOpenImage: portraitAssets.mouthOpenImage,
+      auraImage: portraitAssets.auraImage,
       characterName,
+      appearance,
       personAtomId: personAtom.id || 'Person',
       compatibility: 'vam-scene',
     };
   } catch {
     return null;
   }
+}
+
+function extractFullCharacterData(filePath) {
+  try {
+    const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    if (!raw.atoms || !Array.isArray(raw.atoms)) return null;
+
+    const personAtom = raw.atoms.find(a => a.type === 'Person');
+    if (!personAtom) return null;
+
+    const storables = Array.isArray(personAtom.storables) ? personAtom.storables : [];
+    const geometry = storables.find(s => s.id === 'geometry');
+    if (!geometry) return null;
+
+    const characterBase = geometry.character || '';
+    const dir = path.dirname(filePath);
+    const baseName = path.basename(filePath, '.json');
+    const portraitAssets = discoverPresetPortraitAssets(dir, baseName);
+
+    // Clothing — full items with categories
+    const clothing = toArray(geometry.clothing).map(entry => {
+      const parsed = parseVamAssetEntry(entry, 'clothing');
+      return {
+        id: String(entry.internalId || entry.id || ''),
+        internalId: String(entry.internalId || ''),
+        name: parsed.name,
+        enabled: parsed.enabled,
+        category: parsed.category,
+        source: parsed.source,
+      };
+    });
+    const clothingByCategory = {};
+    for (const item of clothing) {
+      if (!clothingByCategory[item.category]) clothingByCategory[item.category] = [];
+      clothingByCategory[item.category].push(item);
+    }
+
+    // Hair
+    const hair = toArray(geometry.hair).map(entry => {
+      const parsed = parseVamAssetEntry(entry, 'hair');
+      return {
+        id: String(entry.internalId || entry.id || ''),
+        internalId: String(entry.internalId || ''),
+        name: parsed.name,
+        enabled: parsed.enabled,
+      };
+    });
+
+    // Morphs — full items with categories
+    const morphItems = toArray(geometry.morphs).map(morph => {
+      const name = String(morph.name || morph.uid || '');
+      const value = Number(morph.value ?? 0);
+      const category = classifyMorphCategory(name);
+      return { name, value, category };
+    });
+    const morphCategories = {};
+    for (const morph of morphItems) {
+      if (!morphCategories[morph.category]) morphCategories[morph.category] = [];
+      morphCategories[morph.category].push(morph);
+    }
+
+    // Skin
+    const skinStorable = storables.find(s => s.id === 'skin');
+    const skinColorRaw = skinStorable?.['Subsurface Color'] || skinStorable?.SubsurfaceColor || null;
+    const skinColor = skinColorRaw && typeof skinColorRaw === 'object'
+      ? { h: Number(skinColorRaw.h ?? skinColorRaw.H ?? 0), s: Number(skinColorRaw.s ?? skinColorRaw.S ?? 0), v: Number(skinColorRaw.v ?? skinColorRaw.V ?? 1) }
+      : { h: 0, s: 0, v: 1 };
+
+    // Textures
+    const textureStorable = storables.find(s => s.id === 'textures');
+    const textureRefs = {};
+    if (textureStorable) {
+      for (const [key, value] of Object.entries(textureStorable)) {
+        if (key === 'id') continue;
+        textureRefs[key] = String(value || '');
+      }
+    }
+
+    // Bone controls present (for future gesture mapping)
+    const boneControls = storables
+      .filter(s => /Control$/.test(s.id || ''))
+      .map(s => s.id);
+
+    return {
+      name: baseName,
+      sceneFile: filePath,
+      folderPath: dir,
+      characterBase,
+      previewImage: portraitAssets.previewImage,
+      baseImage: portraitAssets.baseImage,
+      blinkImage: portraitAssets.blinkImage,
+      mouthOpenImage: portraitAssets.mouthOpenImage,
+      auraImage: portraitAssets.auraImage,
+      clothing,
+      clothingByCategory,
+      hair,
+      morphs: {
+        items: morphItems,
+        categories: morphCategories,
+        total: morphItems.length,
+      },
+      skinColor,
+      textureRefs,
+      boneControls,
+      counts: {
+        clothing: clothing.length,
+        hair: hair.length,
+        morphs: morphItems.length,
+        bones: boneControls.length,
+      },
+      personAtomId: personAtom.id || 'Person',
+    };
+  } catch {
+    return null;
+  }
+}
+
+function getCharacterPresetDir() {
+  return ensureDirectory(path.join(app.getPath('userData'), 'gemcode-character-presets'));
+}
+
+function listSavedCharacterPresets() {
+  const presetDir = getCharacterPresetDir();
+  const entries = safeReaddir(presetDir);
+  return entries
+    .filter(entry => !entry.isDirectory() && path.extname(entry.name).toLowerCase() === '.json')
+    .map(entry => {
+      const fullPath = path.join(presetDir, entry.name);
+      try {
+        const data = JSON.parse(fs.readFileSync(fullPath, 'utf8'));
+        return {
+          fileName: entry.name,
+          filePath: fullPath,
+          name: data.name || pickDisplayNameFromPath(fullPath),
+          characterBase: data.characterBase || '',
+          sourceScene: data.sourceScene || '',
+          clothingCount: Array.isArray(data.clothing) ? data.clothing.filter(c => c.enabled).length : 0,
+          hairCount: Array.isArray(data.hair) ? data.hair.length : 0,
+          morphCount: data.morphOverrides ? Object.keys(data.morphOverrides).length : 0,
+          savedAt: data.savedAt || '',
+        };
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function saveCharacterPreset(name, presetData) {
+  const presetDir = getCharacterPresetDir();
+  const fileName = `${slugify(name)}.json`;
+  const fullPath = path.join(presetDir, fileName);
+  const payload = {
+    ...presetData,
+    name: String(name || 'Preset').trim(),
+    savedAt: new Date().toISOString(),
+  };
+  fs.writeFileSync(fullPath, JSON.stringify(payload, null, 2), 'utf8');
+  return { fileName, filePath: fullPath, name: payload.name };
+}
+
+function loadCharacterPreset(fileName) {
+  const fullPath = path.join(getCharacterPresetDir(), fileName);
+  if (!fs.existsSync(fullPath)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(fullPath, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function deleteCharacterPreset(fileName) {
+  const fullPath = path.join(getCharacterPresetDir(), fileName);
+  if (fs.existsSync(fullPath)) {
+    fs.unlinkSync(fullPath);
+    return true;
+  }
+  return false;
 }
 
 function scanVamPresets(rootPath, maxDepth = 4) {
@@ -550,7 +1265,7 @@ function scanVamPresets(rootPath, maxDepth = 4) {
     }
   }
 
-  return results.sort((a, b) => a.name.localeCompare(b.name)).slice(0, 100);
+  return results.sort((a, b) => a.name.localeCompare(b.name)).slice(0, 1000);
 }
 
 function getQuickVamPresets() {
@@ -565,6 +1280,14 @@ function getQuickVamPresets() {
     seen.add(item.sceneFile);
     return true;
   });
+}
+
+function resolveSceneScanRoots(rootPath) {
+  const target = String(rootPath || '').trim();
+  if (!target || /^[a-zA-Z]:\\?$/.test(target)) {
+    return VAM_SCENE_ROOTS.filter(rootDir => fs.existsSync(rootDir));
+  }
+  return [target];
 }
 
 function updateProfile(profileId, partial) {
@@ -819,15 +1542,30 @@ ipcMain.handle('companion:pick-avatar-root', async () => {
 
 ipcMain.handle('companion:scan-avatar-library', async (_event, rootPath) => {
   const targetRoot = (rootPath || store.avatarLibraryRoot || 'D:\\Saves\\scene').trim();
+  const roots = resolveSceneScanRoots(targetRoot);
+  const items = [];
+  const seen = new Set();
+  for (const rootDir of roots) {
+    for (const item of scanVamPresets(rootDir, 4)) {
+      if (seen.has(item.sceneFile)) continue;
+      seen.add(item.sceneFile);
+      items.push(item);
+    }
+  }
   return {
     rootPath: targetRoot,
-    items: scanVamPresets(targetRoot, 4),
+    scannedRoots: roots,
+    items,
   };
 });
 
 ipcMain.handle('companion:list-quick-vam-avatars', async () => ({
   items: getQuickVamPresets(),
 }));
+
+ipcMain.handle('companion:get-vam-asset-catalog', async () => buildVamAssetCatalog());
+
+ipcMain.handle('companion:resolve-vam-character-package', async (_event, packagePath) => resolveVarCharacterPackage(packagePath));
 
 ipcMain.handle('companion:to-file-url', async (_event, filePath) => normalizeFilePath(filePath));
 
@@ -878,6 +1616,22 @@ ipcMain.handle('companion:toggle-click-through', async (_event, enabled) => {
   applyWidgetSettings();
   broadcastSettings();
   return activeProfile.widget.clickThrough;
+});
+
+ipcMain.handle('companion:get-character-data', async (_event, sceneFilePath) => extractFullCharacterData(sceneFilePath));
+
+ipcMain.handle('companion:save-character-preset', async (_event, name, presetData) => {
+  const result = saveCharacterPreset(name, presetData);
+  return { ...result, presets: listSavedCharacterPresets() };
+});
+
+ipcMain.handle('companion:list-character-presets', async () => listSavedCharacterPresets());
+
+ipcMain.handle('companion:load-character-preset', async (_event, fileName) => loadCharacterPreset(fileName));
+
+ipcMain.handle('companion:delete-character-preset', async (_event, fileName) => {
+  deleteCharacterPreset(fileName);
+  return listSavedCharacterPresets();
 });
 
 ipcMain.on('companion:update-widget-live-state', (_event, payload) => {

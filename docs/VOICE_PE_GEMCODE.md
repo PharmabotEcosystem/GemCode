@@ -81,8 +81,8 @@ Stato: infrastruttura pronta, non ancora completa dal punto di vista acustico.
 
 Nota importante:
 
-- la UI, il bridge e il firmware sono gia predisposti per esporre e gestire la wake word desiderata `GEMMA`
-- per un vero trigger vocale `GEMMA` serve ancora un modello `micro_wake_word` dedicato
+- la UI, il bridge e il firmware sono gia predisposti per esporre la wake word desiderata `OK GEMMA`
+- per un vero trigger vocale `OK GEMMA` serve ancora un modello `micro_wake_word` dedicato
 - senza quel modello, la modalita wake non puo essere considerata una wake word reale di produzione
 
 ## Portale unico
@@ -211,7 +211,7 @@ Nel pannello impostazioni di GemCode controlla:
 2. Verifica che il bridge risponda su `http://localhost:10301/health`.
 3. Verifica che il box appaia online nella Web UI.
 4. Regola host, modello, temperatura e system prompt nella sezione profilo condiviso e applica al bridge.
-5. Solo dopo, passa a `docs/gemcode_box3_wake.yaml` se disponi di un modello wake word reale per `GEMMA`.
+5. Solo dopo, passa a `docs/gemcode_box3_wake.yaml` se disponi di un modello wake word reale per `OK GEMMA`.
 
 ## Dipendenze bridge
 

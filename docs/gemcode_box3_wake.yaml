@@ -12,8 +12,8 @@ substitutions:
   bridge_udp_control_port: "10311"
   wake_word_model: "hey_jarvis"
   wake_word_model_query: "hey_jarvis"
-  wake_word_label: "placeholder - serve un modello GEMMA dedicato"
-  wake_word_label_query: placeholder%20-%20serve%20un%20modello%20GEMMA%20dedicato
+  wake_word_label: "OK GEMMA (alias temporaneo, modello reale assente)"
+  wake_word_label_query: "OK%20GEMMA%20(alias%20temporaneo%2C%20modello%20reale%20assente)"
   wake_capture_ms: "5000"
   api_encryption_key: !secret gemcode_api_encryption_key
 
@@ -169,6 +169,11 @@ speaker:
     sample_rate: 48000
     bits_per_sample: 16
 
+rtttl:
+  id: wake_feedback_tone
+  speaker: announcement_speaker
+  gain: 0.25
+
 voice_kit:
   id: voice_kit_component
   i2c_id: internal_i2c
@@ -221,6 +226,7 @@ micro_wake_word:
           condition:
             lambda: return !id(ptt_active) && !id(ptt_waiting_response);
           then:
+            - script.execute: play_wake_detected_feedback
             - script.execute: start_wake_capture
 
 power_supply:
@@ -312,6 +318,16 @@ script:
           green: 0%
           blue: 0%
           brightness: 80%
+  - id: play_wake_detected_feedback
+    mode: restart
+    then:
+      - script.execute: show_listening
+      - rtttl.stop:
+          id: wake_feedback_tone
+      - rtttl.play:
+          id: wake_feedback_tone
+          rtttl: "wakeok:d=32,o=6,b=180:e,g"
+      - delay: 140ms
   - id: start_wake_word
     then:
       - if:

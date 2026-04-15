@@ -32,6 +32,26 @@ function Test-CommandAvailable {
     return $null -ne (Get-Command $Name -ErrorAction SilentlyContinue)
 }
 
+function Get-RepoPythonExecutable {
+    $candidates = @(
+        (Join-Path $repoRoot '.venv-1\Scripts\python.exe'),
+        (Join-Path $repoRoot '.venv\Scripts\python.exe')
+    )
+
+    foreach ($candidate in $candidates) {
+        if (Test-Path $candidate) {
+            return $candidate
+        }
+    }
+
+    $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
+    if ($pythonCmd) {
+        return $pythonCmd.Source
+    }
+
+    throw 'Nessun interprete Python trovato. Attiva o crea prima il virtualenv del repo.'
+}
+
 function Test-TcpPortInUse {
     param([int]$Port)
     $listeners = [System.Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners()
@@ -258,10 +278,13 @@ function Start-Bridge {
     }
 
     $shell = if (Test-CommandAvailable -Name "pwsh") { "pwsh" } else { "powershell" }
+    $pythonExe = Get-RepoPythonExecutable
     $bridgeStdOut = Join-Path $logRoot "bridge.stdout.log"
     $bridgeStdErr = Join-Path $logRoot "bridge.stderr.log"
     $publicHostAssignment = if ($ExpectedPublicHost) { "`$env:GEMCODE_BRIDGE_HOST='$ExpectedPublicHost'; " } else { "" }
-    $command = "& { Set-Location '$repoRoot'; ${publicHostAssignment}python 'scripts/gemcode_voice_bridge.py' }"
+    $command = "& { Set-Location '$repoRoot'; ${publicHostAssignment}& '$pythonExe' 'scripts/gemcode_voice_bridge.py' }"
+
+    Write-Info "Bridge avviato con Python: $pythonExe"
 
     Start-Process -FilePath $shell `
         -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $command) `

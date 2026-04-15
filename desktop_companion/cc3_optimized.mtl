@@ -1,0 +1,133 @@
+# CC3 optimized MTL — only diffuse + normal maps for Three.js performance
+# Removes wrinkle maps, SSS, micro-normal, metallic, AO, channel maps
+# Reduces VRAM from ~303MB to ~80MB
+
+newmtl Std_Eyelash
+    Ns 2.0
+    d 1.0
+    Ka 0.49 0.49 0.49
+    Kd 1.0 1.0 1.0
+    Ks 0.9 0.9 0.9
+    map_Kd j/Std_Eyelash_diffuse.jpg
+    map_D j/Std_Eyelash_opacity.png
+    norm j/Std_Eyelash_normal.png
+
+newmtl Std_Skin_Head
+    Ns 20.0
+    d 1.0
+    Ka 0.49 0.49 0.49
+    Kd 1.0 1.0 1.0
+    Ks 0.27 0.27 0.27
+    map_Kd j/Std_Skin_Head_diffuse.png
+    norm j/Std_Skin_Head_normal.png
+
+newmtl Std_Skin_Body
+    Ns 20.0
+    d 1.0
+    Ka 0.49 0.49 0.49
+    Kd 1.0 1.0 1.0
+    Ks 0.27 0.27 0.27
+    map_Kd j/Std_Skin_Body_diffuse.png
+    norm j/Std_Skin_Body_normal.png
+
+newmtl Std_Skin_Arm
+    Ns 20.0
+    d 1.0
+    Ka 0.49 0.49 0.49
+    Kd 1.0 1.0 1.0
+    Ks 0.27 0.27 0.27
+    map_Kd j/Std_Skin_Arm_diffuse.png
+    norm j/Std_Skin_Arm_normal.png
+
+newmtl Std_Skin_Leg
+    Ns 20.0
+    d 1.0
+    Ka 0.49 0.49 0.49
+    Kd 1.0 1.0 1.0
+    Ks 0.27 0.27 0.27
+    map_Kd j/Std_Skin_Leg_diffuse.png
+    norm j/Std_Skin_Leg_normal.png
+
+newmtl Std_Nails
+    Ns 20.0
+    d 1.0
+    Ka 0.49 0.49 0.49
+    Kd 1.0 1.0 1.0
+    Ks 0.27 0.27 0.27
+    map_Kd j/Std_Nails_diffuse.jpg
+    norm j/Std_Nails_normal.png
+
+newmtl Std_Tongue
+    Ns 2.0
+    d 1.0
+    Ka 0.49 0.49 0.49
+    Kd 1.0 1.0 1.0
+    Ks 0.9 0.9 0.9
+    map_Kd j/Std_Tongue_diffuse.png
+    norm j/Std_Tongue_normal.png
+
+newmtl Std_Eye_R
+    Ns 20.0
+    d 1.0
+    Ka 0.20 0.20 0.20
+    Kd 1.0 1.0 1.0
+    Ks 0.90 0.90 0.90
+    map_Kd j/Std_Eye_R_diffuse.png
+    norm j/Std_Eye_R_normal.png
+
+newmtl Std_Eye_L
+    Ns 20.0
+    d 1.0
+    Ka 0.20 0.20 0.20
+    Kd 1.0 1.0 1.0
+    Ks 0.90 0.90 0.90
+    map_Kd j/Std_Eye_L_diffuse.png
+    norm j/Std_Eye_L_normal.png
+
+newmtl Std_Cornea_R
+    Ns 90.0
+    d 0.15
+    Ka 0.05 0.05 0.05
+    Kd 1.0 1.0 1.0
+    Ks 1.0 1.0 1.0
+
+newmtl Std_Cornea_L
+    Ns 90.0
+    d 0.15
+    Ka 0.05 0.05 0.05
+    Kd 1.0 1.0 1.0
+    Ks 1.0 1.0 1.0
+
+newmtl Std_Upper_Teeth
+    Ns 2.0
+    d 1.0
+    Ka 0.49 0.49 0.49
+    Kd 0.88 0.88 0.88
+    Ks 0.9 0.9 0.9
+    map_Kd j/Std_Upper_Teeth_diffuse.png
+    norm j/Std_Upper_Teeth_normal.png
+
+newmtl Std_Lower_Teeth
+    Ns 2.0
+    d 1.0
+    Ka 0.49 0.49 0.49
+    Kd 0.88 0.88 0.88
+    Ks 0.9 0.9 0.9
+    map_Kd j/Std_Lower_Teeth_diffuse.png
+    norm j/Std_Lower_Teeth_normal.png
+
+newmtl Std_Tearline_R
+    d 0.0
+    Kd 0.0 0.0 0.0
+
+newmtl Std_Tearline_L
+    d 0.0
+    Kd 0.0 0.0 0.0
+
+newmtl Std_Eye_Occlusion_R
+    d 0.0
+    Kd 0.0 0.0 0.0
+
+newmtl Std_Eye_Occlusion_L
+    d 0.0
+    Kd 0.0 0.0 0.0
