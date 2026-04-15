@@ -12,6 +12,8 @@ contextBridge.exposeInMainWorld('gemcodeCompanion', {
   importProfile: () => ipcRenderer.invoke('companion:import-profile'),
   pickAvatarFile: kind => ipcRenderer.invoke('companion:pick-avatar-file', kind),
   pickAvatarRoot: () => ipcRenderer.invoke('companion:pick-avatar-root'),
+  pickVamExe: () => ipcRenderer.invoke('companion:pick-vam-exe'),
+  launchVam: sceneFile => ipcRenderer.invoke('companion:launch-vam', sceneFile),
   scanAvatarLibrary: rootPath => ipcRenderer.invoke('companion:scan-avatar-library', rootPath),
   listQuickVamAvatars: () => ipcRenderer.invoke('companion:list-quick-vam-avatars'),
   getVamAssetCatalog: () => ipcRenderer.invoke('companion:get-vam-asset-catalog'),

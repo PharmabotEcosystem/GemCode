@@ -1,4 +1,5 @@
 const { app, BrowserWindow, dialog, ipcMain, screen } = require('electron');
+const { spawn } = require('child_process');
 const AdmZip = require('adm-zip');
 const fs = require('fs');
 const path = require('path');
@@ -128,6 +129,10 @@ const DEFAULT_STORE = {
   schemaVersion: STORE_SCHEMA_VERSION,
   avatarLibraryRoot: 'D:\\Saves\\scene',
   bridgeUrl: 'http://localhost:10301',
+  vam: {
+    exePath: '',
+    autoLaunch: false,
+  },
   activeProfileId: DEFAULT_PROFILE.id,
   profiles: [DEFAULT_PROFILE],
 };
@@ -303,6 +308,9 @@ function normalizeStore(inputStore) {
   merged.schemaVersion = STORE_SCHEMA_VERSION;
   merged.avatarLibraryRoot = String(merged.avatarLibraryRoot || DEFAULT_STORE.avatarLibraryRoot);
   merged.bridgeUrl = String(merged.bridgeUrl || DEFAULT_STORE.bridgeUrl);
+  merged.vam = mergeDeep(deepClone(DEFAULT_STORE.vam), merged.vam || {});
+  merged.vam.exePath = String(merged.vam.exePath || '').trim();
+  merged.vam.autoLaunch = Boolean(merged.vam.autoLaunch);
   merged.profiles = (Array.isArray(merged.profiles) ? merged.profiles : [deepClone(DEFAULT_PROFILE)]).map(normalizeProfile);
   if (merged.profiles.length === 0) {
     merged.profiles = [createDefaultProfile()];
@@ -390,6 +398,7 @@ function buildStateSnapshot() {
       schemaVersion: store.schemaVersion,
       avatarLibraryRoot: store.avatarLibraryRoot,
       bridgeUrl: store.bridgeUrl,
+      vam: deepClone(store.vam || DEFAULT_STORE.vam),
       activeProfileId: activeProfile.id,
     },
     profiles: deepClone(store.profiles),
@@ -1290,6 +1299,72 @@ function resolveSceneScanRoots(rootPath) {
   return [target];
 }
 
+function resolveVamExecutablePath() {
+  const configured = String(store?.vam?.exePath || '').trim();
+  if (configured && fs.existsSync(configured)) {
+    return configured;
+  }
+
+  const candidates = [
+    'D:\\VaM\\VaM.exe',
+    'D:\\Virt-A-Mate\\VaM.exe',
+    'D:\\Games\\VaM\\VaM.exe',
+    'C:\\VaM\\VaM.exe',
+    'C:\\Virt-A-Mate\\VaM.exe',
+  ];
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return '';
+}
+
+function launchVam(sceneFile = '') {
+  const exePath = resolveVamExecutablePath();
+  if (!exePath) {
+    return {
+      ok: false,
+      launched: false,
+      error: 'VaM.exe non trovato. Seleziona il percorso nello Studio.',
+    };
+  }
+
+  const preferredScene = String(sceneFile || '').trim();
+  const resolvedScene = preferredScene && fs.existsSync(preferredScene) ? preferredScene : '';
+  const args = resolvedScene ? [resolvedScene] : [];
+
+  try {
+    const child = spawn(exePath, args, {
+      cwd: path.dirname(exePath),
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: false,
+    });
+    child.unref();
+    try {
+      fs.appendFileSync(DEBUG_LOG, `[MAIN] launchVam exe=${exePath} scene=${resolvedScene || '<none>'}\n`);
+    } catch (_) {}
+    return {
+      ok: true,
+      launched: true,
+      exePath,
+      sceneFile: resolvedScene,
+      usedSceneArgument: Boolean(resolvedScene),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      launched: false,
+      exePath,
+      sceneFile: resolvedScene,
+      error: error.message || String(error),
+    };
+  }
+}
+
 function updateProfile(profileId, partial) {
   const profileIndex = store.profiles.findIndex(profile => profile.id === profileId);
   if (profileIndex < 0) {
@@ -1297,7 +1372,9 @@ function updateProfile(profileId, partial) {
   }
 
   const currentProfile = store.profiles[profileIndex];
+  const currentScene = String(currentProfile.characterPreset?.sourceScene || currentProfile.avatar?.sceneFile || '').trim();
   const nextProfile = normalizeProfile(mergeDeep(currentProfile, partial || {}), profileIndex);
+  const nextScene = String(nextProfile.characterPreset?.sourceScene || nextProfile.avatar?.sceneFile || '').trim();
   store.profiles.splice(profileIndex, 1, nextProfile);
   if (store.activeProfileId === profileId) {
     syncWidgetWindowToActiveProfile();
@@ -1305,6 +1382,9 @@ function updateProfile(profileId, partial) {
   saveSettings();
   applyWidgetSettings();
   broadcastSettings();
+  if (store.vam?.autoLaunch && nextScene && nextScene !== currentScene) {
+    launchVam(nextScene);
+  }
   return buildStateSnapshot();
 }
 
@@ -1540,6 +1620,30 @@ ipcMain.handle('companion:pick-avatar-root', async () => {
   return result.filePaths[0];
 });
 
+ipcMain.handle('companion:pick-vam-exe', async () => {
+  const result = await dialog.showOpenDialog({
+    title: 'Seleziona VaM.exe',
+    defaultPath: resolveVamExecutablePath() || 'D:\\',
+    properties: ['openFile'],
+    filters: [
+      { name: 'VaM executable', extensions: ['exe'] },
+      { name: 'Tutti i file', extensions: ['*'] },
+    ],
+  });
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return '';
+  }
+
+  store.vam = {
+    ...(store.vam || {}),
+    exePath: result.filePaths[0],
+  };
+  saveSettings();
+  broadcastSettings();
+  return result.filePaths[0];
+});
+
 ipcMain.handle('companion:scan-avatar-library', async (_event, rootPath) => {
   const targetRoot = (rootPath || store.avatarLibraryRoot || 'D:\\Saves\\scene').trim();
   const roots = resolveSceneScanRoots(targetRoot);
@@ -1566,6 +1670,8 @@ ipcMain.handle('companion:list-quick-vam-avatars', async () => ({
 ipcMain.handle('companion:get-vam-asset-catalog', async () => buildVamAssetCatalog());
 
 ipcMain.handle('companion:resolve-vam-character-package', async (_event, packagePath) => resolveVarCharacterPackage(packagePath));
+
+ipcMain.handle('companion:launch-vam', async (_event, sceneFile) => launchVam(sceneFile));
 
 ipcMain.handle('companion:to-file-url', async (_event, filePath) => normalizeFilePath(filePath));
 
