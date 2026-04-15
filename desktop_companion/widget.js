@@ -32,6 +32,8 @@ const framingOffsetSlider = document.getElementById('framingOffsetSlider');
 const alwaysOnTopCheck = document.getElementById('alwaysOnTopCheck');
 const showTranscriptCheck = document.getElementById('showTranscriptCheck');
 const openStudioBtn = document.getElementById('openStudioBtn');
+const testVoiceBtn = document.getElementById('testVoiceBtn');
+const launchVamBtn = document.getElementById('launchVamBtn');
 const chatLog = document.getElementById('chatLog');
 const chatInput = document.getElementById('chatInput');
 const sendButton = document.getElementById('sendButton');
@@ -76,6 +78,62 @@ function parseEmotionAndGestures(text) {
     .replace(/\s{2,}/g, ' ')
     .trim();
   return { cleanText, emotion, gestures };
+}
+
+function buildLocalAudioUrl(audioUrl, bridgeBase) {
+  const raw = String(audioUrl || '').trim();
+  const localBridge = String(bridgeBase || 'http://localhost:10301').replace(/\/$/, '');
+  if (!raw) return '';
+
+  if (raw.startsWith('/audio/')) {
+    return `${localBridge}${raw}`;
+  }
+
+  try {
+    const parsed = new URL(raw);
+    const audioName = decodeURIComponent(parsed.pathname.split('/audio/').pop() || '');
+    if (audioName) {
+      return `${localBridge}/audio/${encodeURIComponent(audioName)}`;
+    }
+  } catch (_) {}
+
+  return raw;
+}
+
+function playResponseAudio(audioUrl, cleanText, responseText) {
+  const bridgeBase = widgetState.snapshot?.app?.bridgeUrl || 'http://localhost:10301';
+  const candidates = [buildLocalAudioUrl(audioUrl, bridgeBase), String(audioUrl || '').trim()].filter(Boolean);
+  const uniqueCandidates = [...new Set(candidates)];
+
+  const finishPlayback = () => {
+    widgetState.activeAudio = null;
+    window.gemcodeCompanion.updateWidgetLiveState({ phase: 'idle', transcript: cleanText, responseText, lipSync: false });
+  };
+
+  const tryPlay = index => {
+    if (index >= uniqueCandidates.length) {
+      finishPlayback();
+      return;
+    }
+
+    const audio = new Audio(uniqueCandidates[index]);
+    widgetState.activeAudio = audio;
+    audio.addEventListener('ended', finishPlayback, { once: true });
+    audio.addEventListener('error', () => tryPlay(index + 1), { once: true });
+    audio.play().catch(() => tryPlay(index + 1));
+  };
+
+  tryPlay(0);
+}
+
+async function launchActiveVamScene() {
+  const sceneFile = getActiveProfile()?.characterPreset?.sourceScene || getActiveProfile()?.avatar?.sceneFile || quickAvatarSelect.value || '';
+  const result = await window.gemcodeCompanion.launchVam(sceneFile);
+  const message = result?.ok
+    ? (result.usedSceneArgument ? 'VaM avviato con la scena selezionata.' : 'VaM avviato. Nessuna scena valida passata, quindi parte sulla home.')
+    : `Avvio VaM fallito: ${result?.error || 'errore sconosciuto'}`;
+  renderSpeechBubble(message, 'assistant');
+  setPhase(result?.ok ? 'idle' : 'error');
 }
 
 function syncPortraitFx() {
@@ -360,6 +418,7 @@ function renderCurrentLookDetails() {
 }
 
 function renderVamCatalog() {
+  if (!libraryCatalog) return;
   const catalog = widgetState.vamCatalog;
   if (!catalog) {
     libraryCatalog.innerHTML = '<div class="catalog-card"><div class="catalog-card-title">Catalogo locale</div><div class="catalog-card-meta">Sto caricando i contenuti da D:\\Custom…</div></div>';
@@ -719,26 +778,7 @@ async function sendChat(text) {
       widgetState.activeAudio = null;
     }
     if (payload.audio_url) {
-      // Force audio URL through localhost to avoid Electron blocking external IPs
-      const bridgeBase = widgetState.snapshot?.app?.bridgeUrl || 'http://localhost:10301';
-      const audioFileName = payload.audio_url.split('/audio/').pop();
-      const localAudioUrl = `${bridgeBase}/audio/${audioFileName}`;
-      const audio = new Audio(localAudioUrl);
-      widgetState.activeAudio = audio;
-      audio.addEventListener('ended', () => {
-        widgetState.activeAudio = null;
-        window.gemcodeCompanion.updateWidgetLiveState({ phase: 'idle', transcript: cleanText, responseText, lipSync: false });
-      });
-      audio.addEventListener('error', (e) => {
-        console.error('Audio playback error:', localAudioUrl, e);
-        widgetState.activeAudio = null;
-        window.gemcodeCompanion.updateWidgetLiveState({ phase: 'idle', transcript: cleanText, responseText, lipSync: false });
-      });
-      audio.play().catch(err => {
-        console.error('Audio play failed:', err);
-        widgetState.activeAudio = null;
-        window.gemcodeCompanion.updateWidgetLiveState({ phase: 'idle', transcript: cleanText, responseText, lipSync: false });
-      });
+      playResponseAudio(payload.audio_url, cleanText, responseText);
     }
   } catch (error) {
     chatInput.value = originalInputValue;
@@ -821,6 +861,12 @@ async function init() {
   showTranscriptCheck.addEventListener('change', () => {
     maybeShowTranscript();
     scheduleSettingsSave(profile => ({ widget: { ...profile.widget, showTranscript: showTranscriptCheck.checked } }));
+  });
+  testVoiceBtn?.addEventListener('click', () => {
+    void sendChat('Fai un test voce rapido dicendo semplicemente ciao.');
+  });
+  launchVamBtn?.addEventListener('click', () => {
+    void launchActiveVamScene();
   });
   openStudioBtn.addEventListener('click', async () => {
     await window.gemcodeCompanion.openStudio();

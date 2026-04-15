@@ -30,13 +30,18 @@ function bindElements() {
     saveProfileButton: $('saveProfileButton'),
     saveAppButton: $('saveAppButton'),
     focusWidgetButton: $('focusWidgetButton'),
+    showAdvancedStudio: $('showAdvancedStudio'),
     quickAvatarSelect: $('quickAvatarSelect'),
     quickAvatarMeta: $('quickAvatarMeta'),
     bridgeUrl: $('bridgeUrl'),
     avatarLibraryRoot: $('avatarLibraryRoot'),
+    vamExePath: $('vamExePath'),
+    autoLaunchVam: $('autoLaunchVam'),
     avatarLibraryRootLabel: $('avatarLibraryRootLabel'),
     avatarLibraryCount: $('avatarLibraryCount'),
     pickAvatarRootButton: $('pickAvatarRootButton'),
+    pickVamExeButton: $('pickVamExeButton'),
+    launchVamButton: $('launchVamButton'),
     scanAvatarLibraryButton: $('scanAvatarLibraryButton'),
     profileName: $('profileName'),
     avatarName: $('avatarName'),
@@ -57,6 +62,7 @@ function bindElements() {
     sttLanguage: $('sttLanguage'),
     autoSpeak: $('autoSpeak'),
     autoSendVoice: $('autoSendVoice'),
+    testVoiceButton: $('testVoiceButton'),
     widgetWidth: $('widgetWidth'),
     widgetWidthValue: $('widgetWidthValue'),
     widgetHeight: $('widgetHeight'),
@@ -125,6 +131,17 @@ function activeProfile() {
 function setSliderBadge(input, output, suffix = '') {
   if (!input || !output) return;
   output.textContent = `${input.value}${suffix}`;
+}
+
+function applyStudioMode(showAdvanced) {
+  const enabled = Boolean(showAdvanced);
+  document.body.classList.toggle('studio-simple-mode', !enabled);
+  if (elements.showAdvancedStudio) {
+    elements.showAdvancedStudio.checked = enabled;
+  }
+  try {
+    window.localStorage.setItem('gemcodeStudioShowAdvanced', enabled ? '1' : '0');
+  } catch (_) {}
 }
 
 function requirePermission(permissionValue, capabilityLabel) {
@@ -776,6 +793,8 @@ function renderSnapshot(snapshot) {
 
   elements.bridgeUrl.value = app.bridgeUrl || '';
   elements.avatarLibraryRoot.value = app.avatarLibraryRoot || '';
+  elements.vamExePath.value = app.vam?.exePath || '';
+  elements.autoLaunchVam.checked = Boolean(app.vam?.autoLaunch);
   elements.avatarLibraryRootLabel.textContent = app.avatarLibraryRoot || 'D:\\';
 
   elements.profileName.value = profile.name || '';
@@ -852,6 +871,10 @@ function collectAppSettingsFromForm() {
   return {
     bridgeUrl: elements.bridgeUrl.value.trim(),
     avatarLibraryRoot: elements.avatarLibraryRoot.value.trim(),
+    vam: {
+      exePath: elements.vamExePath.value.trim(),
+      autoLaunch: elements.autoLaunchVam.checked,
+    },
   };
 }
 
@@ -1028,6 +1051,61 @@ function parseEmotionAndGestures(text) {
     .replace(/\s{2,}/g, ' ')
     .trim();
   return { cleanText, emotion, gestures };
+}
+
+function buildLocalAudioUrl(audioUrl, bridgeBase) {
+  const raw = String(audioUrl || '').trim();
+  const localBridge = String(bridgeBase || elements.bridgeUrl.value.trim() || 'http://localhost:10301').replace(/\/$/, '');
+  if (!raw) return '';
+
+  if (raw.startsWith('/audio/')) {
+    return `${localBridge}${raw}`;
+  }
+
+  try {
+    const parsed = new URL(raw);
+    const audioName = decodeURIComponent(parsed.pathname.split('/audio/').pop() || '');
+    if (audioName) {
+      return `${localBridge}/audio/${encodeURIComponent(audioName)}`;
+    }
+  } catch (_) {}
+
+  return raw;
+}
+
+function playAudioResponse(audioUrl, cleanText, responseText) {
+  const candidates = [
+    buildLocalAudioUrl(audioUrl, elements.bridgeUrl.value.trim()),
+    String(audioUrl || '').trim(),
+  ].filter(Boolean);
+
+  const uniqueCandidates = [...new Set(candidates)];
+  const finish = () => {
+    updateWidgetLiveState({ phase: 'idle', transcript: cleanText, responseText });
+    setChatStatus('Idle');
+  };
+
+  const tryPlay = index => {
+    if (index >= uniqueCandidates.length) {
+      finish();
+      return;
+    }
+
+    const audio = new Audio(uniqueCandidates[index]);
+    audio.addEventListener('ended', finish, { once: true });
+    audio.addEventListener('error', () => tryPlay(index + 1), { once: true });
+    audio.play().catch(() => tryPlay(index + 1));
+  };
+
+  tryPlay(0);
+}
+
+async function launchVamFromStudio() {
+  const sceneFile = activeProfile()?.characterPreset?.sourceScene || activeProfile()?.avatar?.sceneFile || '';
+  const result = await window.gemcodeCompanion.launchVam(sceneFile);
+  setChatStatus(result?.ok
+    ? (result.usedSceneArgument ? 'VaM avviato con scena selezionata' : 'VaM avviato')
+    : `VaM non avviato: ${result?.error || 'errore sconosciuto'}`);
 }
 
 function concatenateFloat32(chunks) {
@@ -1219,15 +1297,7 @@ async function sendChat(text, fromVoice = false) {
     setChatStatus(payload.audio_url ? 'Speaking' : 'Idle');
 
     if (payload.audio_url) {
-      const audio = new Audio(payload.audio_url);
-      audio.addEventListener('ended', () => {
-        updateWidgetLiveState({ phase: 'idle', transcript: cleanText, responseText });
-        setChatStatus('Idle');
-      });
-      audio.play().catch(() => {
-        updateWidgetLiveState({ phase: 'idle', transcript: cleanText, responseText });
-        setChatStatus('Idle');
-      });
+      playAudioResponse(payload.audio_url, cleanText, responseText);
     }
   } catch (error) {
     if (!fromVoice) {
@@ -1342,8 +1412,10 @@ function bindEvents() {
   elements.widgetOpacity.addEventListener('input', () => setSliderBadge(elements.widgetOpacity, elements.widgetOpacityValue));
 
   elements.focusWidgetButton.addEventListener('click', () => window.gemcodeCompanion.focusWidget());
+  elements.showAdvancedStudio?.addEventListener('change', () => applyStudioMode(elements.showAdvancedStudio.checked));
   elements.saveAppButton.addEventListener('click', () => void saveAppSettings());
   elements.saveProfileButton.addEventListener('click', () => void saveProfile());
+  elements.testVoiceButton?.addEventListener('click', () => void sendChat('Fai un test voce rapido dicendo semplicemente ciao.'));
 
   elements.quickAvatarSelect.addEventListener('change', () => void applyQuickAvatarSelection());
 
@@ -1405,6 +1477,15 @@ function bindEvents() {
     await scanAvatarLibrary(selected);
   });
 
+  elements.pickVamExeButton?.addEventListener('click', async () => {
+    const selected = await window.gemcodeCompanion.pickVamExe();
+    if (!selected) return;
+    elements.vamExePath.value = selected;
+    await saveAppSettings();
+  });
+
+  elements.launchVamButton?.addEventListener('click', () => void launchVamFromStudio());
+
   elements.scanAvatarLibraryButton.addEventListener('click', () => void scanAvatarLibrary());
 
   elements.clickThrough.addEventListener('change', async () => {
@@ -1452,6 +1533,14 @@ function bindEvents() {
 async function init() {
   bindElements();
   bindEvents();
+  const storedMode = (() => {
+    try {
+      return window.localStorage.getItem('gemcodeStudioShowAdvanced') === '1';
+    } catch (_) {
+      return false;
+    }
+  })();
+  applyStudioMode(storedMode);
   renderSnapshot(await window.gemcodeCompanion.getSettings());
   await loadQuickAvatarMenu();
   await scanAvatarLibrary(state.snapshot?.app?.avatarLibraryRoot);

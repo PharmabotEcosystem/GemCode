@@ -11,4 +11,14 @@ docs/.esphome/
 
 # Gradle build cache
 .gradle/
+
+# Local-only image assets
+.avatar-scan-cache/
 *.jpg
+*.jpeg
+*.png
+*.webp
+*.gif
+*.bmp
+*.svg
+*.ico

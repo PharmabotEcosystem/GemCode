@@ -25,6 +25,10 @@ body {
     linear-gradient(180deg, #07111a 0%, #091923 45%, #071018 100%);
 }
 
+body.studio-simple-mode [data-advanced='true'] {
+  display: none;
+}
+
 button,
 input,
 select,

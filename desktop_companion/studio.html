@@ -22,6 +22,11 @@
         <button id="saveProfileButton" class="primary-button">Salva profilo</button>
       </div>
 
+      <label class="checkbox-row">
+        <input id="showAdvancedStudio" type="checkbox" />
+        <span>Mostra opzioni avanzate</span>
+      </label>
+
       <section class="sidebar-card">
         <div class="section-head compact">
           <div>
@@ -69,8 +74,20 @@
           Radice libreria avatar
           <input id="avatarLibraryRoot" type="text" />
         </label>
+        <label>
+          Percorso VaM.exe
+          <input id="vamExePath" type="text" placeholder="D:\\VaM\\VaM.exe" />
+        </label>
+        <label class="checkbox-row">
+          <input id="autoLaunchVam" type="checkbox" />
+          <span>Apri VaM automaticamente quando cambi scena</span>
+        </label>
         <div class="button-row">
           <button id="pickAvatarRootButton" class="secondary-button">Scegli cartella</button>
+          <button id="pickVamExeButton" class="secondary-button">Scegli VaM.exe</button>
+        </div>
+        <div class="button-row">
+          <button id="launchVamButton" class="secondary-button">Avvia VaM</button>
           <button id="saveAppButton" class="secondary-button">Salva app</button>
         </div>
       </section>
@@ -157,6 +174,7 @@
           <input id="autoSendVoice" type="checkbox" />
           <span>Invia automaticamente dopo la trascrizione microfono</span>
         </label>
+        <button id="testVoiceButton" class="secondary-button">Test voce</button>
       </section>
     </aside>
 
@@ -213,7 +231,7 @@
         </div>
       </section>
 
-      <section class="main-card prompt-card">
+      <section class="main-card prompt-card" data-advanced="true">
         <div class="section-head">
           <div>
             <h2>Prompt, comportamento e memoria</h2>
@@ -288,7 +306,7 @@
         </div>
       </section>
 
-      <section class="main-card permissions-card">
+      <section class="main-card permissions-card" data-advanced="true">
         <div class="section-head">
           <div>
             <h2>Permessi e controlli</h2>
