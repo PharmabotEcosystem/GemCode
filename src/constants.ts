@@ -25,6 +25,7 @@ export const DEFAULT_SKILLS: Skill[] = [
 
 export const DEFAULT_SETTINGS: AppSettings = {
   ollamaHost: 'http://localhost:11434', ollamaModel: 'gemma4', temperature: 0.7,
+  topK: 40, topP: 0.9, repeatPenalty: 1.1, numPredict: 1024, numCtx: 4096,
   systemPrompt: 'Sei GemCode Assistant, un assistente AI utile, preciso e conciso. Rispondi sempre in modo chiaro e diretto. Se non conosci qualcosa, dillo esplicitamente senza inventare.',
   bridgeUrl: 'http://localhost:10301', voiceDeviceId: 'box3',
   agentPermissions: DEFAULT_PERMISSIONS, skills: DEFAULT_SKILLS,

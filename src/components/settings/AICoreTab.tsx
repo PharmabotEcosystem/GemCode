@@ -40,6 +40,32 @@ export function AICoreTab({ settings, setSettings, modelOptions }: Props) {
             value={settings.temperature}
             onChange={v => setSettings(s => ({ ...s, temperature: v }))}
             help="Valori bassi sono deterministici, valori alti più fantasiosi." />
+            
+          <RangeField label="Top-K" min={1} max={100} step={1}
+            value={settings.topK ?? 40}
+            onChange={v => setSettings(s => ({ ...s, topK: v }))}
+            help="Limita le opzioni del modello ai K token più probabili (default 40)." />
+
+          <RangeField label="Top-P" min={0.1} max={1.0} step={0.05}
+            value={settings.topP ?? 0.9}
+            onChange={v => setSettings(s => ({ ...s, topP: v }))}
+            help="Filtra cumulativamente le probabilità dei token (default 0.9)." />
+
+          <RangeField label="Penalità Ripetizione (Repeat Penalty)" min={1.0} max={2.0} step={0.05}
+            value={settings.repeatPenalty ?? 1.1}
+            onChange={v => setSettings(s => ({ ...s, repeatPenalty: v }))}
+            help="Disincentiva la ripetizione delle stesse frasi (default 1.1)." />
+
+          <RangeField label="Lunghezza Contesto (Num Ctx)" min={1024} max={32768} step={1024}
+            value={settings.numCtx ?? 4096}
+            onChange={v => setSettings(s => ({ ...s, numCtx: v }))}
+            help="Dimensione della finestra di contesto in token (default 4096)." />
+
+          <RangeField label="Limite Output (Num Predict)" min={128} max={8192} step={128}
+            value={settings.numPredict ?? 1024}
+            onChange={v => setSettings(s => ({ ...s, numPredict: v }))}
+            help="Numero massimo di token che l'agente può generare in una risposta (default 1024)." />
+
           <div>
             <div className="flex items-center mb-1.5">
               <label className="text-xs text-muted font-medium">Istruzioni di Sistema</label>

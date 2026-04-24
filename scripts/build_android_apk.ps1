@@ -4,33 +4,27 @@ Write-Host "=============================================="
 Write-Host "      COMPILAZIONE GEMCODE ANDROID AGENT      "
 Write-Host "=============================================="
 
-# 1. Trova Java (se JAVA_HOME non è impostato)
-if (-not $env:JAVA_HOME) {
-    Write-Host "JAVA_HOME non impostato, cerco il JDK di Android Studio..."
+# 1. Setup Java 17 Locale
+$localJdkDir = "scripts\jdk17"
+if (-not (Test-Path "$localJdkDir\bin\java.exe")) {
+    Write-Host "Scaricamento di Java 17 (Eclipse Temurin) necessario per la build Android..."
+    if (-not (Test-Path "scripts")) { New-Item -ItemType Directory -Path "scripts" | Out-Null }
     
-    $paths = @(
-        "C:\Program Files\Android\Android Studio\jbr",
-        "C:\Program Files\Android\Android Studio\jre",
-        "C:\Program Files\Java\jdk-17*"
-    )
-    
-    $javaFound = $false
-    foreach ($p in $paths) {
-        $matches = Get-Item -Path $p -ErrorAction SilentlyContinue
-        if ($matches -and $matches.Count -gt 0) {
-            $env:JAVA_HOME = $matches[0].FullName
-            Write-Host "✓ Trovato JDK in: $($env:JAVA_HOME)"
-            $javaFound = $true
-            break
-        }
+    $zipPath = "scripts\jdk17.zip"
+    if (-not (Test-Path $zipPath)) {
+        Invoke-WebRequest -Uri 'https://api.adoptium.net/v3/binary/latest/17/ga/windows/x64/jdk/hotspot/normal/eclipse' -OutFile $zipPath
     }
     
-    if (-not $javaFound) {
-        Write-Warning "Nessun JDK locale trovato in percorsi standard. Gradle proverà a usare la Toolchain per scaricare Java 17."
-    }
-} else {
-    Write-Host "✓ JAVA_HOME è già impostato: $($env:JAVA_HOME)"
+    Write-Host "Estrazione di Java 17..."
+    Expand-Archive -Path $zipPath -DestinationPath "scripts\jdk17_temp" -Force
+    $extractedDir = Get-ChildItem "scripts\jdk17_temp" | Select-Object -First 1
+    Move-Item -Path "$($extractedDir.FullName)\*" -Destination "scripts\jdk17" -Force
+    Remove-Item "scripts\jdk17_temp" -Recurse -Force
+    Remove-Item $zipPath -Force
 }
+
+$env:JAVA_HOME = (Resolve-Path $localJdkDir).Path
+Write-Host "JAVA_HOME impostato su: $($env:JAVA_HOME)"
 
 # 2. Crea la cartella di output
 $distDir = "dist\android"
@@ -40,13 +34,13 @@ if (-not (Test-Path $distDir)) {
 
 # 3. Compila l'APK
 Write-Host "`nAvvio compilazione Gradle (assembleDebug)..."
-$gradleCmd = ".\gradlew"
+$gradleCmd = ".\gradlew.bat"
 $args = @(":android_agent:assembleDebug", "--no-daemon")
 
 $process = Start-Process -FilePath $gradleCmd -ArgumentList $args -NoNewWindow -Wait -PassThru
 
 if ($process.ExitCode -ne 0) {
-    Write-Error "La build è fallita con codice $($process.ExitCode). Controlla l'output sopra."
+    Write-Error "La build e fallita con codice $($process.ExitCode). Controlla l'output sopra."
     exit $process.ExitCode
 }
 
@@ -58,7 +52,7 @@ if ($apkPath) {
     $targetPath = "$distDir\GemCode-Agent.apk"
     Copy-Item -Path $apkPath.FullName -Destination $targetPath -Force
     Write-Host "=============================================="
-    Write-Host "✓ BUILD COMPLETATA CON SUCCESSO!"
+    Write-Host "BUILD COMPLETATA CON SUCCESSO!"
     Write-Host "File APK disponibile in: $targetPath"
     Write-Host "=============================================="
 } else {

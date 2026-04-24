@@ -4,6 +4,7 @@ import { motion } from 'motion/react';
 import type { AppSettings, SettingsTab, ModelOption, VoiceBridgeSettings, VoiceDeviceStatus, BridgeHealthSnapshot, Reachability, ChatAttachment } from '../types';
 import { SettingsTabNav } from './settings/SettingsTabNav';
 import { AICoreTab } from './settings/AICoreTab';
+import { AvatarTab } from './settings/AvatarTab';
 import { SkillsTab } from './settings/SkillsTab';
 import { VoiceTab } from './settings/VoiceTab';
 import { SecurityTab } from './settings/SecurityTab';
@@ -57,6 +58,7 @@ export function SettingsPanel({
         {/* Tab Content */}
         <div className="flex-1 overflow-y-auto px-5 py-6">
           {activeTab === 'ai' && <AICoreTab settings={settings} setSettings={setSettings} modelOptions={modelOptions} />}
+          {activeTab === 'avatar' && <AvatarTab settings={settings} setSettings={setSettings} />}
           {activeTab === 'skills' && <SkillsTab settings={settings} setSettings={setSettings} />}
           {activeTab === 'voice' && (
             <VoiceTab settings={settings} setSettings={setSettings}

@@ -1,9 +1,10 @@
 import React from 'react';
-import { Cpu, Book, Volume2, ShieldCheck, FolderOpen, Info } from 'lucide-react';
+import { Cpu, Book, Volume2, ShieldCheck, FolderOpen, Info, UserCircle } from 'lucide-react';
 import type { SettingsTab } from '../../types';
 
 const TABS: { id: SettingsTab; icon: React.ReactNode; label: string }[] = [
   { id: 'ai', icon: <Cpu className="w-4 h-4" />, label: 'AI Core' },
+  { id: 'avatar', icon: <UserCircle className="w-4 h-4" />, label: 'Avatar 3D' },
   { id: 'skills', icon: <Book className="w-4 h-4" />, label: 'Skills' },
   { id: 'voice', icon: <Volume2 className="w-4 h-4" />, label: 'Voce' },
   { id: 'security', icon: <ShieldCheck className="w-4 h-4" />, label: 'Sicurezza' },

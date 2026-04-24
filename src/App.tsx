@@ -21,6 +21,7 @@ import { SettingsPanel } from './components/SettingsPanel';
 import { ErrorBanner } from './components/ui/ErrorBanner';
 import { GemcodeLogo } from './components/ui/GemcodeLogo';
 import { BackendStatusDot } from './components/ui/StatusBadge';
+import { CompanionView } from './components/CompanionView';
 
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
@@ -36,6 +37,7 @@ export default function App() {
   const [ollamaStatus, setOllamaStatus] = useState<'online' | 'offline' | 'checking'>('checking');
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
   const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([]);
+  const [currentView, setCurrentView] = useState<'chat' | 'companion'>('chat');
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -121,7 +123,15 @@ export default function App() {
       const gen = ollamaStream(
         settings.ollamaHost, settings.ollamaModel,
         [{ role: 'system', content: settings.systemPrompt }, ...history],
-        settings.temperature, controller.signal,
+        {
+          temperature: settings.temperature,
+          topK: settings.topK ?? 40,
+          topP: settings.topP ?? 0.9,
+          repeatPenalty: settings.repeatPenalty ?? 1.1,
+          numPredict: settings.numPredict ?? 1024,
+          numCtx: settings.numCtx ?? 4096
+        },
+        controller.signal,
       );
 
       let accumulated = '';
@@ -163,85 +173,106 @@ export default function App() {
             voiceDeviceStatus={bridge.voiceDeviceStatus}
             voiceDeviceId={settings.voiceDeviceId}
             onClose={() => setSidebarOpen(false)}
+            onSwitchView={setCurrentView}
+            currentView={currentView}
           />
         )}
       </AnimatePresence>
 
       {/* Main area */}
       <div className="flex-1 flex flex-col min-w-0">
-        {/* Header */}
-        <header className="flex items-center justify-between px-4 py-3 border-b border-border bg-surface/80 backdrop-blur shrink-0">
-          <div className="flex items-center gap-2">
-            <button onClick={() => setSidebarOpen(v => !v)}
-              className="p-2 rounded-lg text-secondary hover:bg-elevated hover:text-primary transition-colors">
-              {sidebarOpen ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-            </button>
-            {!sidebarOpen && <GemcodeLogo />}
-          </div>
-          <div className="flex items-center gap-2">
-            <button onClick={() => setSettingsOpen(true)}
-              className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-elevated border border-border text-xs font-medium text-secondary hover:text-primary hover:border-accent/50 transition-colors">
-              <BackendStatusDot ollamaStatus={ollamaStatus} />
-              {activeBackendLabel}
-            </button>
-            <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-full bg-elevated border border-border text-xs font-medium text-secondary">
-              {bridge.voiceDeviceStatus?.status === 'online'
-                ? <Wifi className="w-3.5 h-3.5 text-green-400" />
-                : <WifiOff className="w-3.5 h-3.5 text-red-400" />}
-              <span>{bridge.voiceDeviceStatus?.status === 'online' ? 'Dispositivo attivo' : 'Dispositivo offline'}</span>
-            </div>
-            {messages.length > 0 && (
-              <button onClick={newChat} className="p-2 rounded-lg text-secondary hover:bg-elevated hover:text-primary transition-colors" title="Nuova chat">
-                <Trash2 className="w-4 h-4" />
-              </button>
+        {currentView === 'companion' ? (
+          <CompanionView 
+            messages={messages}
+            onSendMessage={sendMessage}
+            isLoading={isLoading}
+            settings={settings}
+            stt={{
+              transcript: stt.transcript,
+              isListening: stt.isListening,
+              start: stt.startListening,
+              stop: stt.stopListening
+            }}
+            onOpenSettings={() => setSettingsOpen(true)}
+            isSpeaking={tts.isSpeaking}
+          />
+        ) : (
+          <>
+            {/* Header */}
+            <header className="flex items-center justify-between px-4 py-3 border-b border-border bg-surface/80 backdrop-blur shrink-0">
+              <div className="flex items-center gap-2">
+                <button onClick={() => setSidebarOpen(v => !v)}
+                  className="p-2 rounded-lg text-secondary hover:bg-elevated hover:text-primary transition-colors">
+                  {sidebarOpen ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                </button>
+                {!sidebarOpen && <GemcodeLogo />}
+              </div>
+              <div className="flex items-center gap-2">
+                <button onClick={() => setSettingsOpen(true)}
+                  className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-elevated border border-border text-xs font-medium text-secondary hover:text-primary hover:border-accent/50 transition-colors">
+                  <BackendStatusDot ollamaStatus={ollamaStatus} />
+                  {activeBackendLabel}
+                </button>
+                <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-full bg-elevated border border-border text-xs font-medium text-secondary">
+                  {bridge.voiceDeviceStatus?.status === 'online'
+                    ? <Wifi className="w-3.5 h-3.5 text-green-400" />
+                    : <WifiOff className="w-3.5 h-3.5 text-red-400" />}
+                  <span>{bridge.voiceDeviceStatus?.status === 'online' ? 'Dispositivo attivo' : 'Dispositivo offline'}</span>
+                </div>
+                {messages.length > 0 && (
+                  <button onClick={newChat} className="p-2 rounded-lg text-secondary hover:bg-elevated hover:text-primary transition-colors" title="Nuova chat">
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+            </header>
+
+            {/* Messages area */}
+            <main className="flex-1 overflow-y-auto">
+              {messages.length === 0 ? (
+                <WelcomeScreen onSuggestion={sendMessage} />
+              ) : (
+                <div className="max-w-3xl mx-auto px-4 py-8 space-y-6">
+                  {messages.map(msg => (
+                    <MessageBubble
+                      key={msg.id}
+                      message={msg}
+                      onSpeak={handleSpeak}
+                      onStopSpeaking={tts.stop}
+                      isSpeaking={tts.isSpeaking}
+                    />
+                  ))}
+                  {error && <ErrorBanner message={error} />}
+                  <div ref={messagesEndRef} />
+                </div>
+              )}
+            </main>
+
+            {error && messages.length === 0 && (
+              <div className="max-w-3xl mx-auto w-full px-4 pb-2">
+                <ErrorBanner message={error} />
+              </div>
             )}
-          </div>
-        </header>
 
-        {/* Messages area */}
-        <main className="flex-1 overflow-y-auto">
-          {messages.length === 0 ? (
-            <WelcomeScreen onSuggestion={sendMessage} />
-          ) : (
-            <div className="max-w-3xl mx-auto px-4 py-8 space-y-6">
-              {messages.map(msg => (
-                <MessageBubble
-                  key={msg.id}
-                  message={msg}
-                  onSpeak={handleSpeak}
-                  onStopSpeaking={tts.stop}
-                  isSpeaking={tts.isSpeaking}
-                />
-              ))}
-              {error && <ErrorBanner message={error} />}
-              <div ref={messagesEndRef} />
-            </div>
-          )}
-        </main>
-
-        {error && messages.length === 0 && (
-          <div className="max-w-3xl mx-auto w-full px-4 pb-2">
-            <ErrorBanner message={error} />
-          </div>
+            {/* Chat input */}
+            <ChatInput
+              input={input}
+              setInput={setInput}
+              onSend={sendMessage}
+              isLoading={isLoading}
+              onStop={stopGeneration}
+              pendingAttachments={pendingAttachments}
+              setPendingAttachments={setPendingAttachments}
+              settings={settings}
+              setSettings={setSettings}
+              isListening={stt.isListening}
+              sttSupported={stt.isSupported}
+              sttTranscript={stt.transcript}
+              onStartListening={stt.startListening}
+              onStopListening={stt.stopListening}
+            />
+          </>
         )}
-
-        {/* Chat input */}
-        <ChatInput
-          input={input}
-          setInput={setInput}
-          onSend={sendMessage}
-          isLoading={isLoading}
-          onStop={stopGeneration}
-          pendingAttachments={pendingAttachments}
-          setPendingAttachments={setPendingAttachments}
-          settings={settings}
-          setSettings={setSettings}
-          isListening={stt.isListening}
-          sttSupported={stt.isSupported}
-          sttTranscript={stt.transcript}
-          onStartListening={stt.startListening}
-          onStopListening={stt.stopListening}
-        />
       </div>
 
       {/* Settings panel */}

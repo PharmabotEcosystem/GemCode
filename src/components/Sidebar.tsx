@@ -1,4 +1,4 @@
-import { Plus, MessageSquare, Settings, Wifi, WifiOff, ChevronLeft } from 'lucide-react';
+import { Plus, MessageSquare, Settings, Wifi, WifiOff, ChevronLeft, UserCircle } from 'lucide-react';
 import { motion } from 'motion/react';
 import type { Conversation, VoiceDeviceStatus } from '../types';
 import { GemcodeLogo } from './ui/GemcodeLogo';
@@ -13,9 +13,11 @@ interface Props {
   voiceDeviceStatus: VoiceDeviceStatus | null;
   voiceDeviceId: string;
   onClose: () => void;
+  onSwitchView: (view: 'chat' | 'companion') => void;
+  currentView: 'chat' | 'companion';
 }
 
-export function Sidebar({ conversations, onNewChat, onOpenSettings, ollamaStatus, activeBackendLabel, voiceDeviceStatus, voiceDeviceId, onClose }: Props) {
+export function Sidebar({ conversations, onNewChat, onOpenSettings, ollamaStatus, activeBackendLabel, voiceDeviceStatus, voiceDeviceId, onClose, onSwitchView, currentView }: Props) {
   return (
     <motion.aside
       key="sidebar"
@@ -38,6 +40,14 @@ export function Sidebar({ conversations, onNewChat, onOpenSettings, ollamaStatus
       <div className="px-3 py-3">
         <button onClick={onNewChat} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-secondary hover:bg-elevated hover:text-primary transition-colors">
           <Plus className="w-4 h-4 shrink-0" />Nuova chat
+        </button>
+        <button 
+          onClick={() => onSwitchView(currentView === 'chat' ? 'companion' : 'chat')} 
+          className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-colors ${
+            currentView === 'companion' ? 'bg-accent/15 text-accent hover:bg-accent/25' : 'text-secondary hover:bg-elevated hover:text-primary'
+          }`}
+        >
+          <UserCircle className="w-4 h-4 shrink-0" />{currentView === 'chat' ? 'Desktop Companion' : 'Torna alla Chat'}
         </button>
       </div>
 

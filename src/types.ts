@@ -99,7 +99,13 @@ export interface AppSettings {
   ollamaHost: string;
   ollamaModel: string;
   temperature: number;
+  topK: number;
+  topP: number;
+  repeatPenalty: number;
+  numPredict: number;
+  numCtx: number;
   systemPrompt: string;
+  companionVrmUrl?: string;
   bridgeUrl: string;
   voiceDeviceId: string;
   agentPermissions: AgentPermissions;
@@ -197,4 +203,4 @@ export interface VoiceOption {
 
 /* ── Settings tabs ──────────────────────────────────────────── */
 
-export type SettingsTab = 'ai' | 'skills' | 'voice' | 'security' | 'workspace' | 'info';
+export type SettingsTab = 'ai' | 'avatar' | 'skills' | 'voice' | 'security' | 'workspace' | 'info';

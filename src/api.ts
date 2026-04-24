@@ -6,7 +6,8 @@ import { DEFAULT_VOICE_BRIDGE_SETTINGS } from './constants';
 export async function* ollamaStream(
   host: string, model: string,
   messages: { role: string; content: string; images?: string[] }[],
-  temperature: number, signal: AbortSignal,
+  options: { temperature: number; topK: number; topP: number; repeatPenalty: number; numPredict: number; numCtx: number },
+  signal: AbortSignal,
 ): AsyncGenerator<string> {
   const url = `${host.replace(/\/$/, '')}/api/chat`;
   let resp: Response;
@@ -14,7 +15,17 @@ export async function* ollamaStream(
     resp = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, messages, stream: true, keep_alive: '24h', options: { temperature } }),
+      body: JSON.stringify({
+        model, messages, stream: true, keep_alive: '24h',
+        options: {
+          temperature: options.temperature,
+          top_k: options.topK,
+          top_p: options.topP,
+          repeat_penalty: options.repeatPenalty,
+          num_predict: options.numPredict,
+          num_ctx: options.numCtx
+        }
+      }),
       signal,
     });
   } catch (e) {
@@ -27,7 +38,12 @@ export async function* ollamaStream(
   let buffer = '';
   while (true) {
     const { done, value } = await reader.read();
-    if (done) break;
+    if (done) {
+      if (buffer.trim()) {
+        try { const j = JSON.parse(buffer); const t: string = j?.message?.content ?? ''; if (t) yield t; } catch { /* skip */ }
+      }
+      break;
+    }
     buffer += decoder.decode(value, { stream: true });
     const lines = buffer.split('\n'); buffer = lines.pop() ?? '';
     for (const line of lines) {
