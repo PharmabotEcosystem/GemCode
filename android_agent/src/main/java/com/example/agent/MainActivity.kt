@@ -2309,17 +2309,17 @@ fun createEngine(context: Context, file: File, model: GemmaModel): LlmInferenceW
 
 fun parseHistory(raw: String): List<ChatEntry> {
     val result  = mutableListOf<ChatEntry>()
-    var role    = ""
+    var role: com.example.agent.orchestrator.ChatRole? = null
     val buf     = StringBuilder()
     for (line in raw.split("\n")) {
         when {
-            line.startsWith("User: ")       -> { if (role.isNotEmpty()) result += ChatEntry(role, buf.trimEnd().toString()); role = "User";      buf.clear(); buf.append(line.removePrefix("User: "))       }
-            line.startsWith("Assistant: ")  -> { if (role.isNotEmpty()) result += ChatEntry(role, buf.trimEnd().toString()); role = "Assistant"; buf.clear(); buf.append(line.removePrefix("Assistant: "))  }
-            line.startsWith("Observation: ")-> { if (role.isNotEmpty()) result += ChatEntry(role, buf.trimEnd().toString()); role = "Observation";buf.clear(); buf.append(line.removePrefix("Observation: "))}
+            line.startsWith("User: ")       -> { if (role != null) result += ChatEntry(role, buf.trimEnd().toString()); role = com.example.agent.orchestrator.ChatRole.User;      buf.clear(); buf.append(line.removePrefix("User: "))       }
+            line.startsWith("Assistant: ")  -> { if (role != null) result += ChatEntry(role, buf.trimEnd().toString()); role = com.example.agent.orchestrator.ChatRole.Agent; buf.clear(); buf.append(line.removePrefix("Assistant: "))  }
+            line.startsWith("Observation: ")-> { if (role != null) result += ChatEntry(role, buf.trimEnd().toString()); role = com.example.agent.orchestrator.ChatRole.Observation;buf.clear(); buf.append(line.removePrefix("Observation: "))}
             else -> buf.append('\n').append(line)
         }
     }
-    if (role.isNotEmpty() && buf.isNotBlank()) result += ChatEntry(role, buf.trimEnd().toString())
+    if (role != null && buf.isNotBlank()) result += ChatEntry(role, buf.trimEnd().toString())
     return result
 }
 

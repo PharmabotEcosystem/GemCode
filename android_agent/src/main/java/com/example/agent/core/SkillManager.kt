@@ -18,7 +18,11 @@ data class Skill(
     val instructions: String,
     /** Example trigger phrases. */
     val examples: List<String> = emptyList(),
-    val isBuiltIn: Boolean = false
+    val isBuiltIn: Boolean = false,
+    val createdBy: String = "user",
+    val tags: List<String> = emptyList(),
+    val usageCount: Int = 0,
+    val enabled: Boolean = true
 )
 
 /**
@@ -180,10 +184,51 @@ class SkillManager @Inject constructor(
         cache = skills
     }
 
-    fun deleteSkill(id: String) {
-        val skills = getAllSkills().filter { it.id != id && !it.isBuiltIn.let { builtIn -> builtIn && id == it.id } }
+    fun deleteSkill(id: String): Boolean {
+        val initialSize = getAllSkills().size
+        val skills = getAllSkills().filter { it.id != id }
+        if (skills.size == initialSize) return false
         persistSkills(skills)
         cache = skills
+        return true
+    }
+
+    fun getSkillByName(name: String): Skill? = getAllSkills().find { it.name.equals(name, ignoreCase = true) }
+
+    fun upsertSkill(
+        name: String,
+        description: String,
+        instructions: String,
+        createdBy: String = "gemma",
+        tags: List<String> = emptyList()
+    ): Skill {
+        val existing = getSkillByName(name)
+        val skill = existing?.copy(
+            description = description,
+            instructions = instructions,
+            createdBy = createdBy,
+            tags = tags
+        ) ?: Skill(
+            id = java.util.UUID.randomUUID().toString(),
+            name = name,
+            description = description,
+            instructions = instructions,
+            createdBy = createdBy,
+            tags = tags
+        )
+        saveSkill(skill)
+        return skill
+    }
+
+    fun incrementUsage(name: String) {
+        val skill = getSkillByName(name) ?: return
+        saveSkill(skill.copy(usageCount = skill.usageCount + 1))
+    }
+
+    fun setEnabled(id: String, enabled: Boolean): Boolean {
+        val skill = getSkillById(id) ?: return false
+        saveSkill(skill.copy(enabled = enabled))
+        return true
     }
 
     /**

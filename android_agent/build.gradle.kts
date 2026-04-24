@@ -144,6 +144,7 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.6")
+    implementation("androidx.work:work-runtime-ktx:2.10.0")
 
     // ── Hilt DI ──────────────────────────────────────────────────────────────
     // CRITICO: hiltVersion deve corrispondere esattamente alla versione del plugin Hilt

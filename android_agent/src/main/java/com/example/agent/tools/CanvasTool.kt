@@ -1,6 +1,7 @@
 package com.example.agent.tools
 
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import javax.inject.Inject
@@ -27,7 +28,7 @@ class CanvasTool : Tool {
         }
     """.trimIndent()
 
-    override suspend fun execute(params: JsonElement): String {
+    override suspend fun execute(params: JsonObject): String {
         val content = params.jsonObject["content"]?.jsonPrimitive?.content
             ?: return "Error: 'content' parameter is required."
         
