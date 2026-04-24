@@ -188,7 +188,12 @@ class BridgeConfig:
     wake_word_label: str = "OK GEMMA"
     wake_word_model: str = "placeholder - serve un modello OK GEMMA dedicato"
     wake_word_notes: str = "Per una vera wake word OK GEMMA serve un modello micro_wake_word dedicato."
-
+    led_idle_color: list[int] = field(default_factory=lambda: [0, 0, 255])
+    led_idle_brightness: int = 45
+    led_listening_color: list[int] = field(default_factory=lambda: [0, 255, 25])
+    led_thinking_color: list[int] = field(default_factory=lambda: [255, 89, 0])
+    led_speaking_color: list[int] = field(default_factory=lambda: [0, 191, 255])
+    led_error_color: list[int] = field(default_factory=lambda: [255, 0, 0])
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> "BridgeConfig":
         tts_provider = str(data.get("tts_provider", DEFAULT_TTS_PROVIDER)).strip().lower()
@@ -219,6 +224,12 @@ class BridgeConfig:
             wake_word_label=str(data.get("wake_word_label", "OK GEMMA")),
             wake_word_model=str(data.get("wake_word_model", "placeholder - serve un modello OK GEMMA dedicato")),
             wake_word_notes=str(data.get("wake_word_notes", "Per una vera wake word OK GEMMA serve un modello micro_wake_word dedicato.")),
+            led_idle_color=list(data.get("led_idle_color", [0, 0, 255])),
+            led_idle_brightness=int(data.get("led_idle_brightness", 45)),
+            led_listening_color=list(data.get("led_listening_color", [0, 255, 25])),
+            led_thinking_color=list(data.get("led_thinking_color", [255, 89, 0])),
+            led_speaking_color=list(data.get("led_speaking_color", [0, 191, 255])),
+            led_error_color=list(data.get("led_error_color", [255, 0, 0])),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -237,6 +248,12 @@ class BridgeConfig:
             "wake_word_label": self.wake_word_label,
             "wake_word_model": self.wake_word_model,
             "wake_word_notes": self.wake_word_notes,
+            "led_idle_color": self.led_idle_color,
+            "led_idle_brightness": self.led_idle_brightness,
+            "led_listening_color": self.led_listening_color,
+            "led_thinking_color": self.led_thinking_color,
+            "led_speaking_color": self.led_speaking_color,
+            "led_error_color": self.led_error_color,
         }
 
 
@@ -940,6 +957,59 @@ async def handle_settings(request: web.Request) -> web.Response:
     return web.json_response(updated.to_dict())
 
 
+async def handle_device_led(request: web.Request) -> web.Response:
+    if request.method != "POST":
+        return web.json_response({"error": "Method non consentito"}, status=405)
+    
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "JSON non valido"}, status=400)
+    
+    device_id = str(data.get("device_id", bridge_config_store.config.device_id)).strip()
+    r = int(data.get("r", 0))
+    g = int(data.get("g", 0))
+    b = int(data.get("b", 255))
+    brightness = int(data.get("brightness", 50))
+    effect = str(data.get("effect", "solid"))
+    
+    snapshot = await bridge_state.get_device_snapshot(device_id)
+    if not snapshot or not snapshot.get("remote_ip"):
+        return web.json_response({"error": f"Dispositivo {device_id} offline o IP sconosciuto"}, status=404)
+    
+    remote_ip = snapshot["remote_ip"]
+    import aiohttp
+    
+    url = f"http://{remote_ip}/light/led_ring/turn_on?r={r}&g={g}&b={b}&brightness={brightness}"
+    if effect != "solid":
+        url += f"&effect={effect}"
+        
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers={"Content-Length": "0"}, timeout=3) as resp:
+                if resp.status == 200:
+                    return web.json_response({"status": "ok", "sent_to": remote_ip})
+                else:
+                    return web.json_response({"error": f"ESPHome ha risposto con {resp.status}"}, status=500)
+    except Exception as exc:
+        logger.exception("Errore REST API LED")
+        return web.json_response({"error": f"REST fallito: {exc}"}, status=500)
+
+
+async def handle_device_config(request: web.Request) -> web.Response:
+    device_id = request.query.get("device_id", bridge_config_store.config.device_id).strip()
+    # In un sistema multi-device cercheremmo la config specifica, per ora usiamo quella globale
+    c = bridge_config_store.config
+    return web.json_response({
+        "device_id": device_id,
+        "led_idle": {"r": c.led_idle_color[0], "g": c.led_idle_color[1], "b": c.led_idle_color[2], "brightness": c.led_idle_brightness},
+        "led_listening": {"r": c.led_listening_color[0], "g": c.led_listening_color[1], "b": c.led_listening_color[2], "brightness": 70},
+        "led_thinking": {"r": c.led_thinking_color[0], "g": c.led_thinking_color[1], "b": c.led_thinking_color[2], "brightness": 70},
+        "led_speaking": {"r": c.led_speaking_color[0], "g": c.led_speaking_color[1], "b": c.led_speaking_color[2], "brightness": 75},
+        "led_error": {"r": c.led_error_color[0], "g": c.led_error_color[1], "b": c.led_error_color[2], "brightness": 80},
+    })
+
+
 async def handle_companion_transcribe(request: web.Request) -> web.Response:
     try:
         data = await request.json()
@@ -1354,8 +1424,10 @@ async def run_http_server() -> None:
     app.router.add_get("/api/device/ping", handle_device_ping)
     app.router.add_get("/api/device/status", handle_device_status)
     app.router.add_get("/api/devices", handle_devices)
+    app.router.add_get("/api/device/config", handle_device_config)
     app.router.add_get("/api/settings", handle_settings)
     app.router.add_post("/api/settings", handle_settings)
+    app.router.add_post("/api/device/led", handle_device_led)
     app.router.add_get("/audio/{audio_name}", handle_audio)
     # VAM AICompanion.cs compatible endpoints
     app.router.add_post("/chat-and-speak", handle_vam_chat_and_speak)

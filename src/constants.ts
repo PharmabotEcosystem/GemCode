@@ -39,6 +39,11 @@ export const DEFAULT_VOICE_BRIDGE_SETTINGS: VoiceBridgeSettings = {
   device_id: 'box3', device_name: 'Home Assistant Voice PE', device_mode: 'ptt',
   wake_word_label: 'GEMMA', wake_word_model: 'placeholder - serve un modello GEMMA dedicato',
   wake_word_notes: 'Per una vera wake word GEMMA serve un modello micro_wake_word dedicato.',
+  led_idle_color: [0, 0, 255], led_idle_brightness: 45,
+  led_listening_color: [0, 255, 25],
+  led_thinking_color: [255, 90, 0],
+  led_speaking_color: [0, 190, 255],
+  led_error_color: [255, 0, 0]
 };
 
 export const TTS_PROVIDER_OPTIONS = [

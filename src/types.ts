@@ -127,6 +127,12 @@ export interface VoiceBridgeSettings {
   wake_word_label: string;
   wake_word_model: string;
   wake_word_notes: string;
+  led_idle_color: number[];
+  led_idle_brightness: number;
+  led_listening_color: number[];
+  led_thinking_color: number[];
+  led_speaking_color: number[];
+  led_error_color: number[];
 }
 
 export interface VoiceDeviceStatus {

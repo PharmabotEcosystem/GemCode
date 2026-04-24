@@ -7,6 +7,31 @@ import { TextField, NumberField } from '../ui/FormFields';
 import { Tooltip } from '../ui/Tooltip';
 import { StatusBadge, InfoRow } from '../ui/StatusBadge';
 
+function rgbToHex(rgb: number[] | undefined): string {
+  if (!rgb || rgb.length < 3) return '#000000';
+  return '#' + rgb.map(x => {
+    const hex = x.toString(16);
+    return hex.length === 1 ? '0' + hex : hex;
+  }).join('');
+}
+
+function hexToRgb(hex: string): number[] {
+  const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+  return result ? [
+    parseInt(result[1], 16),
+    parseInt(result[2], 16),
+    parseInt(result[3], 16)
+  ] : [0, 0, 0];
+}
+
+const LED_PRESETS = [
+  { label: 'Idle', key: 'led_idle_color' as const },
+  { label: 'Ascolto', key: 'led_listening_color' as const },
+  { label: 'Elaborazione', key: 'led_thinking_color' as const },
+  { label: 'Risposta', key: 'led_speaking_color' as const },
+  { label: 'Errore', key: 'led_error_color' as const }
+];
+
 interface Props {
   settings: AppSettings;
   setSettings: React.Dispatch<React.SetStateAction<AppSettings>>;
@@ -20,6 +45,21 @@ interface Props {
 
 export function VoiceTab({ settings, setSettings, voiceBridgeStatus, voiceBridgeSettings, voiceDeviceStatus, bridgeHealth, updateVoiceBridgeSettings, voiceSettingsMessage }: Props) {
   const availableTtsVoices = TTS_VOICE_OPTIONS.filter(o => o.provider === voiceBridgeSettings.tts_provider);
+
+  const testLed = async (r: number, g: number, b: number, brightness: number, effect: string = "solid") => {
+    try {
+      await fetch(`${settings.bridgeUrl}/api/device/led`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          device_id: voiceBridgeSettings.device_id,
+          r, g, b, brightness, effect
+        })
+      });
+    } catch (e) {
+      console.error("Test LED fallito", e);
+    }
+  };
 
   return (
     <div className="space-y-8">
@@ -113,6 +153,51 @@ export function VoiceTab({ settings, setSettings, voiceBridgeStatus, voiceBridge
           {voiceSettingsMessage && (
             <div className="rounded-xl bg-accent/10 border border-accent/20 px-3 py-2 text-xs text-accent">{voiceSettingsMessage}</div>
           )}
+        </SettingsSubsection>
+
+        {/* LED Customization */}
+        <SettingsSubsection title="Personalizzazione LED Dispositivo" icon={<Radio className="w-3.5 h-3.5" />}>
+          <div className="space-y-4">
+            <NumberField label="Luminosità Base (Idle)" value={voiceBridgeSettings.led_idle_brightness ?? 45}
+              onChange={v => updateVoiceBridgeSettings('led_idle_brightness', v)} min={10} max={255} />
+            
+            <div className="space-y-3 pt-2">
+              <label className="text-xs text-muted font-medium">Colori Stati Operativi</label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {LED_PRESETS.map((preset) => (
+                  <div key={preset.key} className="flex items-center justify-between p-2 rounded-xl bg-elevated/50 border border-border">
+                    <span className="text-xs text-secondary">{preset.label}</span>
+                    <div className="flex items-center gap-2">
+                      <input 
+                        type="color" 
+                        value={rgbToHex(voiceBridgeSettings[preset.key] as number[])}
+                        onChange={e => updateVoiceBridgeSettings(preset.key, hexToRgb(e.target.value))}
+                        className="w-8 h-8 rounded cursor-pointer border-0 bg-transparent p-0"
+                      />
+                      <button 
+                        onClick={() => {
+                          const rgb = voiceBridgeSettings[preset.key] as number[] || [0,0,0];
+                          testLed(rgb[0], rgb[1], rgb[2], preset.key === 'led_idle_color' ? voiceBridgeSettings.led_idle_brightness : 75);
+                        }}
+                        className="text-[10px] px-2 py-1 bg-surface border border-border rounded-lg hover:bg-border/50 transition-colors"
+                      >
+                        Test
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            
+            <div className="pt-2">
+              <button 
+                onClick={() => testLed(255, 255, 255, 100, "flash")}
+                className="w-full px-3 py-2 text-xs font-medium bg-accent/10 text-accent rounded-xl border border-accent/20 hover:bg-accent/20 transition-colors"
+              >
+                Invia Flash di Test
+              </button>
+            </div>
+          </div>
         </SettingsSubsection>
       </SettingsSection>
 
