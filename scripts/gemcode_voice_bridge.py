@@ -1339,8 +1339,13 @@ async def handle_vam_set_overlay(request: web.Request) -> web.Response:
     return web.json_response(_vam_overlay_state)
 
 
+async def handle_index(request: web.Request) -> web.Response:
+    return web.json_response({"name": "GemCode Voice Bridge", "status": "active", "api_version": "1.0"})
+
+
 async def run_http_server() -> None:
     app = web.Application(middlewares=[cors_middleware])
+    app.router.add_get("/", handle_index)
     app.router.add_get("/health", handle_health)
     app.router.add_get("/api/bridge/health", handle_bridge_health)
     app.router.add_post("/api/companion/chat", handle_companion_chat)
@@ -1472,6 +1477,17 @@ class GemCodeHandler(AsyncEventHandler):
         await self.write_event(AudioStop().event())
 
 async def main():
+    # Pre-register default device to avoid 404 in UI
+    config = bridge_config_store.config
+    await bridge_state.mark_device_seen(
+        device_id=config.device_id,
+        remote_ip="127.0.0.1",
+        firmware_mode=config.device_mode,
+        wake_word_label=config.wake_word_label,
+        wake_word_model=config.wake_word_model,
+        device_name=config.device_name,
+    )
+
     server = AsyncTcpServer(HOST, WYOMING_PORT)
     logger.info(f"GemCode Wyoming Bridge attivo su {HOST}:{WYOMING_PORT}")
     await asyncio.gather(

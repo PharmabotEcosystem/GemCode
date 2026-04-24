@@ -26,6 +26,18 @@ import {
   SlidersHorizontal,
   Save,
   Boxes,
+  Shield,
+  Lock,
+  FolderOpen,
+  Terminal,
+  Globe,
+  Brain,
+  Zap,
+  Eye,
+  Plug,
+  Image,
+  Video,
+  Volume2,
 } from 'lucide-react';
 import { Document as DocxDocument, Packer, Paragraph, TextRun } from 'docx';
 import { jsPDF } from 'jspdf';
@@ -50,6 +62,34 @@ interface Conversation {
 
 type Reachability = 'online' | 'offline' | 'checking';
 
+type PermissionPolicy = 'allow' | 'deny' | 'ask';
+
+interface AgentPermissions {
+  fileRead: PermissionPolicy;
+  fileWrite: PermissionPolicy;
+  fileDelete: PermissionPolicy;
+  shellExec: PermissionPolicy;
+  webSearch: PermissionPolicy;
+  memoryRead: PermissionPolicy;
+  memoryWrite: PermissionPolicy;
+  skillRead: PermissionPolicy;
+  skillWrite: PermissionPolicy;
+  mcpConnect: PermissionPolicy;
+  ttsSpeak: PermissionPolicy;
+  imageGenerate: PermissionPolicy;
+  videoAudioProcess: PermissionPolicy;
+  peripheralAccess: PermissionPolicy;
+  codeExecute: PermissionPolicy;
+}
+
+interface PermissionDescriptor {
+  key: keyof AgentPermissions;
+  label: string;
+  description: string;
+  icon: React.ReactNode;
+  risk: 'low' | 'medium' | 'high';
+}
+
 interface AppSettings {
   ollamaHost: string;
   ollamaModel: string;
@@ -57,6 +97,7 @@ interface AppSettings {
   systemPrompt: string;
   bridgeUrl: string;
   voiceDeviceId: string;
+  agentPermissions: AgentPermissions;
 }
 
 interface VoiceBridgeSettings {
@@ -166,6 +207,24 @@ interface DraftFileState {
 
 const STORAGE_KEY = 'gemcode-web-settings-v2';
 
+const DEFAULT_PERMISSIONS: AgentPermissions = {
+  fileRead: 'ask',
+  fileWrite: 'ask',
+  fileDelete: 'deny',
+  shellExec: 'ask',
+  webSearch: 'allow',
+  memoryRead: 'allow',
+  memoryWrite: 'allow',
+  skillRead: 'allow',
+  skillWrite: 'ask',
+  mcpConnect: 'ask',
+  ttsSpeak: 'allow',
+  imageGenerate: 'allow',
+  videoAudioProcess: 'ask',
+  peripheralAccess: 'deny',
+  codeExecute: 'ask',
+};
+
 const DEFAULT_SETTINGS: AppSettings = {
   ollamaHost: 'http://localhost:11434',
   ollamaModel: 'gemma4',
@@ -176,6 +235,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     'Se non conosci qualcosa, dillo esplicitamente senza inventare.',
   bridgeUrl: 'http://localhost:10301',
   voiceDeviceId: 'box3',
+  agentPermissions: DEFAULT_PERMISSIONS,
 };
 
 const DEFAULT_VOICE_BRIDGE_SETTINGS: VoiceBridgeSettings = {
@@ -1488,6 +1548,69 @@ export default function App() {
                   </div>
                 </SettingsSection>
 
+                <SettingsSection icon={<Shield className="w-4 h-4" />} title="Permessi agente">
+                  <div className="space-y-1">
+                    <p className="text-xs text-muted mb-3">
+                      Controlla cosa l'agente può fare autonomamente. "Chiedi" mostrerà una conferma prima di ogni azione.
+                    </p>
+                    {PERMISSION_DESCRIPTORS.map(perm => (
+                      <PermissionRow
+                        key={perm.key}
+                        descriptor={perm}
+                        value={settings.agentPermissions[perm.key]}
+                        onChange={value => setSettings(s => ({
+                          ...s,
+                          agentPermissions: { ...s.agentPermissions, [perm.key]: value },
+                        }))}
+                      />
+                    ))}
+                    <div className="flex gap-2 pt-3">
+                      <button
+                        onClick={() => setSettings(s => ({
+                          ...s,
+                          agentPermissions: Object.fromEntries(
+                            Object.keys(s.agentPermissions).map(k => [k, 'allow'])
+                          ) as AgentPermissions,
+                        }))}
+                        className="flex-1 inline-flex items-center justify-center gap-2 px-3 py-2 rounded-xl border border-green-500/30 text-xs text-green-400 hover:bg-green-500/10 transition-colors"
+                      >
+                        <Check className="w-3.5 h-3.5" />
+                        Accetta tutti
+                      </button>
+                      <button
+                        onClick={() => setSettings(s => ({
+                          ...s,
+                          agentPermissions: Object.fromEntries(
+                            Object.keys(s.agentPermissions).map(k => [k, 'ask'])
+                          ) as AgentPermissions,
+                        }))}
+                        className="flex-1 inline-flex items-center justify-center gap-2 px-3 py-2 rounded-xl border border-amber-500/30 text-xs text-amber-400 hover:bg-amber-500/10 transition-colors"
+                      >
+                        <Eye className="w-3.5 h-3.5" />
+                        Chiedi tutti
+                      </button>
+                      <button
+                        onClick={() => setSettings(s => ({
+                          ...s,
+                          agentPermissions: Object.fromEntries(
+                            Object.keys(s.agentPermissions).map(k => [k, 'deny'])
+                          ) as AgentPermissions,
+                        }))}
+                        className="flex-1 inline-flex items-center justify-center gap-2 px-3 py-2 rounded-xl border border-red-500/30 text-xs text-red-400 hover:bg-red-500/10 transition-colors"
+                      >
+                        <Lock className="w-3.5 h-3.5" />
+                        Nega tutti
+                      </button>
+                    </div>
+                    <button
+                      onClick={() => setSettings(s => ({ ...s, agentPermissions: DEFAULT_PERMISSIONS }))}
+                      className="w-full mt-2 px-3 py-2 rounded-xl border border-border text-xs text-secondary hover:bg-elevated hover:text-primary transition-colors"
+                    >
+                      Ripristina predefiniti sicuri
+                    </button>
+                  </div>
+                </SettingsSection>
+
                 <SettingsSection icon={<Info className="w-4 h-4" />} title="Informazioni">
                   <div className="space-y-2 text-xs text-secondary">
                     <InfoRow label="Portale web" value="http://localhost:3000" />
@@ -2042,6 +2165,99 @@ function GemcodeLogo({ size = 28 }: { size?: number }) {
       className="rounded-xl bg-gradient-to-br from-accent via-blue-500 to-accent-hover flex items-center justify-center shrink-0 shadow-sm"
     >
       <Sparkles style={{ width: size * 0.5, height: size * 0.5 }} className="text-white" />
+    </div>
+  );
+}
+
+const PERMISSION_DESCRIPTORS: PermissionDescriptor[] = [
+  { key: 'fileRead', label: 'Lettura file', description: 'Leggere file e cartelle dal disco locale', icon: <FolderOpen className="w-4 h-4" />, risk: 'low' },
+  { key: 'fileWrite', label: 'Scrittura file', description: 'Creare e modificare file sul disco locale', icon: <Save className="w-4 h-4" />, risk: 'medium' },
+  { key: 'fileDelete', label: 'Eliminazione file', description: 'Eliminare file e cartelle dal disco', icon: <Trash2 className="w-4 h-4" />, risk: 'high' },
+  { key: 'shellExec', label: 'Esecuzione comandi', description: 'Eseguire comandi nel terminale del sistema', icon: <Terminal className="w-4 h-4" />, risk: 'high' },
+  { key: 'codeExecute', label: 'Esecuzione codice', description: 'Eseguire codice generato (Python, JS, ecc.)', icon: <Zap className="w-4 h-4" />, risk: 'high' },
+  { key: 'webSearch', label: 'Ricerca web', description: 'Cercare informazioni su internet', icon: <Globe className="w-4 h-4" />, risk: 'low' },
+  { key: 'memoryRead', label: 'Lettura memoria', description: 'Consultare i file di memoria e conoscenza', icon: <Brain className="w-4 h-4" />, risk: 'low' },
+  { key: 'memoryWrite', label: 'Scrittura memoria', description: 'Scrivere nuovi ricordi e conoscenze', icon: <Brain className="w-4 h-4" />, risk: 'low' },
+  { key: 'skillRead', label: 'Lettura skills', description: 'Leggere e usare skills esistenti', icon: <Sparkles className="w-4 h-4" />, risk: 'low' },
+  { key: 'skillWrite', label: 'Scrittura skills', description: 'Creare e modificare skills riutilizzabili', icon: <Sparkles className="w-4 h-4" />, risk: 'medium' },
+  { key: 'mcpConnect', label: 'Connessione MCP', description: 'Connettersi a server MCP esterni e plugin', icon: <Plug className="w-4 h-4" />, risk: 'medium' },
+  { key: 'ttsSpeak', label: 'Sintesi vocale', description: 'Generare audio parlato dalle risposte', icon: <Volume2 className="w-4 h-4" />, risk: 'low' },
+  { key: 'imageGenerate', label: 'Generazione immagini', description: 'Creare immagini tramite modelli generativi', icon: <Image className="w-4 h-4" />, risk: 'low' },
+  { key: 'videoAudioProcess', label: 'Elaborazione media', description: 'Processare video e audio (conversione, analisi)', icon: <Video className="w-4 h-4" />, risk: 'medium' },
+  { key: 'peripheralAccess', label: 'Accesso periferiche', description: 'Interagire con periferiche hardware (webcam, microfono, stampante)', icon: <Mic className="w-4 h-4" />, risk: 'high' },
+];
+
+function PermissionRow({
+  descriptor,
+  value,
+  onChange,
+}: {
+  descriptor: PermissionDescriptor;
+  value: PermissionPolicy;
+  onChange: (value: PermissionPolicy) => void;
+}) {
+  const riskColor = descriptor.risk === 'high'
+    ? 'text-red-400'
+    : descriptor.risk === 'medium'
+      ? 'text-amber-400'
+      : 'text-green-400';
+
+  const riskLabel = descriptor.risk === 'high'
+    ? 'ALTO'
+    : descriptor.risk === 'medium'
+      ? 'MEDIO'
+      : 'BASSO';
+
+  return (
+    <div className="rounded-xl border border-border bg-elevated/30 px-3 py-2.5 space-y-2">
+      <div className="flex items-start gap-3">
+        <div className={`mt-0.5 ${riskColor}`}>{descriptor.icon}</div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <p className="text-sm font-medium text-primary">{descriptor.label}</p>
+            <span className={`text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded-full border ${
+              descriptor.risk === 'high'
+                ? 'border-red-500/30 bg-red-500/10 text-red-400'
+                : descriptor.risk === 'medium'
+                  ? 'border-amber-500/30 bg-amber-500/10 text-amber-400'
+                  : 'border-green-500/30 bg-green-500/10 text-green-400'
+            }`}>{riskLabel}</span>
+          </div>
+          <p className="text-[11px] text-muted leading-snug mt-0.5">{descriptor.description}</p>
+        </div>
+      </div>
+      <div className="flex gap-1.5">
+        <button
+          onClick={() => onChange('allow')}
+          className={`flex-1 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all ${
+            value === 'allow'
+              ? 'bg-green-500/20 border border-green-500/40 text-green-400 shadow-sm shadow-green-500/10'
+              : 'border border-border text-muted hover:text-secondary hover:bg-elevated'
+          }`}
+        >
+          Accetta
+        </button>
+        <button
+          onClick={() => onChange('ask')}
+          className={`flex-1 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all ${
+            value === 'ask'
+              ? 'bg-amber-500/20 border border-amber-500/40 text-amber-400 shadow-sm shadow-amber-500/10'
+              : 'border border-border text-muted hover:text-secondary hover:bg-elevated'
+          }`}
+        >
+          Chiedi
+        </button>
+        <button
+          onClick={() => onChange('deny')}
+          className={`flex-1 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all ${
+            value === 'deny'
+              ? 'bg-red-500/20 border border-red-500/40 text-red-400 shadow-sm shadow-red-500/10'
+              : 'border border-border text-muted hover:text-secondary hover:bg-elevated'
+          }`}
+        >
+          Nega
+        </button>
+      </div>
     </div>
   );
 }

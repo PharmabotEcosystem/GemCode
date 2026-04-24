@@ -21,12 +21,10 @@ jobs:
         cache: gradle
 
     - name: Grant execute permission for gradlew
-      run: chmod +x android_agent/gradlew
+      run: chmod +x gradlew
 
     - name: Build with Gradle
-      run: |
-        cd android_agent
-        ./gradlew assembleDebug
+      run: ./gradlew :android_agent:assembleDebug
 
     - name: Upload APK
       uses: actions/upload-artifact@v4
