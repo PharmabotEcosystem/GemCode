@@ -114,6 +114,7 @@ import java.util.Locale
 import androidx.activity.viewModels
 import com.example.agent.orchestrator.AgentViewModel
 import com.example.agent.orchestrator.ChatRole
+import com.example.agent.orchestrator.ChatEntry
 import com.example.agent.mvi.AgentState
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -137,9 +138,7 @@ private enum class LiveVoiceMode {
     ERROR,
 }
 
-// ─── Data models ──────────────────────────────────────────────────────────────
 
-data class ChatEntry(val role: String, val content: String)
 
 // ModelBackend, GemmaModel and AVAILABLE_MODELS are defined in GemmaModels.kt
 
@@ -267,7 +266,7 @@ class MainActivity : ComponentActivity(), Shizuku.OnRequestPermissionResultListe
 
             GemcodeTheme {
                 GemcodeApp(
-                    messages          = history.map { ChatEntry(it.role.name, it.content) },
+                    messages          = history,
                     agentState        = agentState,
                     modelIndex        = modelIndex,
                     lmStudioUrl       = lmStudioUrl,
@@ -724,7 +723,7 @@ private fun GemmaLiveScreen(
                 }
 
                 liveTranscript = text
-                expectedAgentCount = messages.count { it.role.equals("Agent", ignoreCase = true) } + 1
+                expectedAgentCount = messages.count { it.role == ChatRole.Agent } + 1
                 lastSpokenAgentReply = null
                 liveMode = LiveVoiceMode.THINKING
                 liveStatus = "Gemma sta ragionando sulla tua richiesta"
@@ -753,7 +752,7 @@ private fun GemmaLiveScreen(
     }
 
     val agentReplies = remember(messages) {
-        messages.filter { it.role.equals("Agent", ignoreCase = true) }
+        messages.filter { it.role == ChatRole.Agent }
     }
 
     LaunchedEffect(agentReplies.size, isRunning, ttsReady, liveMode) {
@@ -1361,7 +1360,7 @@ private fun ChatWelcome(modifier: Modifier = Modifier) {
 
 @Composable
 private fun ChatBubble(entry: ChatEntry) {
-    val isUser = entry.role.equals("User", ignoreCase = true)
+    val isUser = entry.role == ChatRole.User
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,

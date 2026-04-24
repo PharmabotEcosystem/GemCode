@@ -89,24 +89,7 @@ android {
         disable += "NullSafeMutableLiveData"
     }
 
-    // Source sets: include sibling "flat" directories inside android_agent/.
-    // Paths are relative to this module's directory (android_agent/).
-    sourceSets {
-        getByName("main") {
-            java.srcDirs(
-                "src/main/java",
-                "core",
-                "memory",
-                "tools",
-                "ui",
-                "service",
-                "di",
-                "mvi",
-                "orchestrator",
-                "shizuku"
-            )
-        }
-    }
+
 }
 
 java {

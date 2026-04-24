@@ -6,7 +6,12 @@ Write-Host "=============================================="
 
 # 1. Setup Java 17 Locale
 $localJdkDir = "scripts\jdk17"
-if (-not (Test-Path "$localJdkDir\bin\java.exe")) {
+$javaPath = "$localJdkDir\bin\java.exe"
+if (-not (Test-Path $javaPath)) {
+    $javaPath = "$localJdkDir\java.exe"
+}
+
+if (-not (Test-Path $javaPath)) {
     Write-Host "Scaricamento di Java 17 (Eclipse Temurin) necessario per la build Android..."
     if (-not (Test-Path "scripts")) { New-Item -ItemType Directory -Path "scripts" | Out-Null }
     
