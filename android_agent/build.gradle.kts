@@ -191,10 +191,13 @@ dependencies {
     // ── Networking (per GeminiApiLlmInference e MCPTool) ────────────────────
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
-    // ── NanoHTTPD — server HTTP locale per il web frontend ───────────────────
+    // ── Ktor Server — server HTTP asincrono locale per il web frontend ────────
     // InferenceHttpServer espone POST /api/chat (Ollama-compatible) su porta 8080
-    // così il browser può chiamare Gemma 4 senza nessuna API cloud.
-    implementation("org.nanohttpd:nanohttpd:2.3.1")
+    // così il browser può chiamare Gemma 4 senza bloccare i thread Android.
+    val ktorVersion = "2.3.12"
+    implementation("io.ktor:ktor-server-core:$ktorVersion")
+    implementation("io.ktor:ktor-server-cio:$ktorVersion")
+    implementation("io.ktor:ktor-server-cors:$ktorVersion")
 
     // ── Debug tools ──────────────────────────────────────────────────────────
     debugImplementation("androidx.compose.ui:ui-tooling")

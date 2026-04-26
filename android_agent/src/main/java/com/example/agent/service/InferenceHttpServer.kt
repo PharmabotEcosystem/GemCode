@@ -2,50 +2,30 @@ package com.example.agent.service
 
 import android.util.Log
 import com.example.agent.core.LlmInferenceWrapper
-import fi.iki.elonen.NanoHTTPD
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.runBlocking
+import io.ktor.http.ContentType
+import io.ktor.http.HttpMethod
+import io.ktor.http.HttpStatusCode
+import io.ktor.server.application.call
+import io.ktor.server.application.install
+import io.ktor.server.cio.CIO
+import io.ktor.server.engine.ApplicationEngine
+import io.ktor.server.engine.embeddedServer
+import io.ktor.server.plugins.cors.routing.CORS
+import io.ktor.server.request.receiveText
+import io.ktor.server.response.respondText
+import io.ktor.server.routing.get
+import io.ktor.server.routing.options
+import io.ktor.server.routing.post
+import io.ktor.server.routing.routing
 import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * Server HTTP locale che espone un'API compatibile con Ollama.
+ * Server HTTP locale basato su Ktor che espone un'API asincrona compatibile con Ollama.
  *
  * Il browser (web frontend) chiama questo server esattamente come chiamarebbe
- * Ollama — nessuna modifica al frontend è necessaria, basta impostare l'host
- * nelle impostazioni del browser sull'IP del dispositivo Android.
- *
- * ## Endpoint
- *
- * | Method | Path       | Descrizione                              |
- * |--------|------------|------------------------------------------|
- * | GET    | /api/tags  | Restituisce la lista dei modelli (mock)  |
- * | POST   | /api/chat  | Esegue inferenza con Gemma 4             |
- * | OPTIONS| *          | CORS preflight per richieste browser     |
- *
- * ## Formato richiesta /api/chat (Ollama-compatible)
- * ```json
- * {
- *   "model": "gemma4",
- *   "messages": [
- *     { "role": "system",    "content": "..." },
- *     { "role": "user",      "content": "..." },
- *     { "role": "assistant", "content": "..." }
- *   ],
- *   "stream": false
- * }
- * ```
- *
- * ## Formato risposta
- * ```json
- * { "model": "gemma4", "message": { "role": "assistant", "content": "..." }, "done": true }
- * ```
- *
- * ## Note su CORS
- * Le richieste browser da `http://localhost:5173` (Vite dev) o qualsiasi altra
- * origine sono accettate tramite `Access-Control-Allow-Origin: *`.
+ * Ollama — nessuna modifica al frontend è necessaria. Essendo basato su Ktor CIO,
+ * il server è completamente asincrono e non blocca il thread di rete durante l'inferenza.
  *
  * @param port         Porta TCP su cui ascoltare (default 8080)
  * @param llmInference Engine di inferenza locale (LiteRtLmInference / MediaPipeLlmInference)
@@ -53,133 +33,109 @@ import org.json.JSONObject
 class InferenceHttpServer(
     private val port: Int = DEFAULT_PORT,
     private val llmInference: LlmInferenceWrapper,
-) : NanoHTTPD(port) {
+) {
+    private var server: ApplicationEngine? = null
 
-    private val serverScope = kotlinx.coroutines.CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    fun start() {
+        if (server != null) return
 
-    override fun start() {
-        super.start(SOCKET_READ_TIMEOUT, false /* daemon thread = false → sopravvive all'Activity */)
-        Log.i(TAG, "Inference HTTP server started on port $port")
-    }
-
-    override fun stop() {
-        super.stop()
-        serverScope.cancel()
-        Log.i(TAG, "Inference HTTP server stopped")
-    }
-
-    override fun serve(session: IHTTPSession): Response {
-        // CORS preflight
-        if (session.method == Method.OPTIONS) {
-            return corsResponse(Response.Status.OK, MIME_JSON, "{}")
-        }
-        return try {
-            when {
-                session.uri == "/api/tags" && session.method == Method.GET ->
-                    handleTags()
-
-                session.uri == "/api/chat" && session.method == Method.POST ->
-                    handleChat(session)
-
-                else ->
-                    corsResponse(
-                        Response.Status.NOT_FOUND,
-                        MIME_JSON,
-                        """{"error":"endpoint not found: ${session.method} ${session.uri}"}"""
-                    )
+        server = embeddedServer(CIO, port = port) {
+            install(CORS) {
+                anyHost()
+                allowMethod(HttpMethod.Options)
+                allowMethod(HttpMethod.Get)
+                allowMethod(HttpMethod.Post)
+                allowHeader("Content-Type")
+                allowHeader("Authorization")
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Request error: ${e.message}", e)
-            corsResponse(
-                Response.Status.INTERNAL_ERROR,
-                MIME_JSON,
-                """{"error":${JSONObject.quote(e.message ?: "internal error")}}"""
-            )
-        }
-    }
 
-    // ── /api/tags — restituisce i modelli disponibili ─────────────────────────
+            routing {
+                options("/{...}") {
+                    call.respondText("", status = HttpStatusCode.OK)
+                }
 
-    private fun handleTags(): Response {
-        val body = JSONObject().apply {
-            put("models", JSONArray().apply {
-                put(JSONObject().apply {
-                    put("name", "gemma4")
-                    put("model", "gemma4")
-                    put("details", JSONObject().apply {
-                        put("family", "gemma")
-                        put("parameter_size", "E4B")
-                        put("quantization_level", "LiteRT-LM")
-                    })
-                })
-            })
-        }
-        return corsResponse(Response.Status.OK, MIME_JSON, body.toString())
-    }
+                get("/api/tags") {
+                    val body = JSONObject().apply {
+                        put("models", JSONArray().apply {
+                            put(JSONObject().apply {
+                                put("name", "gemma4")
+                                put("model", "gemma4")
+                                put("details", JSONObject().apply {
+                                    put("family", "gemma")
+                                    put("parameter_size", "E4B")
+                                    put("quantization_level", "LiteRT-LM")
+                                })
+                            })
+                        })
+                    }
+                    call.respondText(body.toString(), ContentType.Application.Json, HttpStatusCode.OK)
+                }
 
-    // ── /api/chat — inferenza Gemma 4 ─────────────────────────────────────────
+                post("/api/chat") {
+                    val rawBody = call.receiveText()
+                    if (rawBody.isBlank()) {
+                        call.respondText(
+                            """{"error":"empty request body"}""",
+                            ContentType.Application.Json,
+                            HttpStatusCode.BadRequest
+                        )
+                        return@post
+                    }
 
-    private fun handleChat(session: IHTTPSession): Response {
-        // Legge il body POST
-        val bodyMap = mutableMapOf<String, String>()
-        session.parseBody(bodyMap)
-        val rawBody = bodyMap["postData"] ?: bodyMap.values.firstOrNull() ?: ""
+                    try {
+                        val json = JSONObject(rawBody)
+                        val messages = json.optJSONArray("messages") ?: JSONArray()
 
-        if (rawBody.isBlank()) {
-            return corsResponse(
-                Response.Status.BAD_REQUEST, MIME_JSON, """{"error":"empty request body"}"""
-            )
-        }
+                        val promptBuilder = StringBuilder()
+                        for (i in 0 until messages.length()) {
+                            val msg = messages.getJSONObject(i)
+                            val role = msg.optString("role", "user")
+                            val content = msg.optString("content", "")
+                            when (role) {
+                                "system" -> promptBuilder.append("<start_of_turn>system\n${content}<end_of_turn>\n")
+                                "user" -> promptBuilder.append("<start_of_turn>user\n${content}<end_of_turn>\n")
+                                "assistant" -> promptBuilder.append("<start_of_turn>model\n${content}<end_of_turn>\n")
+                            }
+                        }
+                        promptBuilder.append("<start_of_turn>model\n")
 
-        val json = JSONObject(rawBody)
-        val messages = json.optJSONArray("messages") ?: JSONArray()
+                        // Inferenza asincrona: llmInference gestisce già l'IO dispatcher internamente
+                        val responseText = llmInference.generateResponse(promptBuilder.toString())
 
-        // Costruisce il prompt concatenando i messaggi nella forma attesa da Gemma
-        val promptBuilder = StringBuilder()
-        for (i in 0 until messages.length()) {
-            val msg = messages.getJSONObject(i)
-            val role    = msg.optString("role",    "user")
-            val content = msg.optString("content", "")
-            when (role) {
-                "system"    -> promptBuilder.append("<start_of_turn>system\n$content<end_of_turn>\n")
-                "user"      -> promptBuilder.append("<start_of_turn>user\n$content<end_of_turn>\n")
-                "assistant" -> promptBuilder.append("<start_of_turn>model\n$content<end_of_turn>\n")
+                        val responseJson = JSONObject().apply {
+                            put("model", json.optString("model", "gemma4"))
+                            put("message", JSONObject().apply {
+                                put("role", "assistant")
+                                put("content", responseText)
+                            })
+                            put("done", true)
+                        }
+
+                        call.respondText(responseJson.toString(), ContentType.Application.Json, HttpStatusCode.OK)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Chat request error: ${e.message}", e)
+                        call.respondText(
+                            """{"error":${JSONObject.quote(e.message ?: "internal error")}}""",
+                            ContentType.Application.Json,
+                            HttpStatusCode.InternalServerError
+                        )
+                    }
+                }
             }
         }
-        promptBuilder.append("<start_of_turn>model\n")
 
-        // Inferenza locale — NanoHTTPD non supporta risposte async, quindi blocchiamo
-        // il thread corrente usando Dispatchers.IO per non saturare altri dispatcher.
-        val responseText = runBlocking(Dispatchers.IO) {
-            llmInference.generateResponse(promptBuilder.toString())
-        }
-
-        // Risposta in formato Ollama
-        val responseJson = JSONObject().apply {
-            put("model",   json.optString("model", "gemma4"))
-            put("message", JSONObject().apply {
-                put("role",    "assistant")
-                put("content", responseText)
-            })
-            put("done", true)
-        }
-
-        return corsResponse(Response.Status.OK, MIME_JSON, responseJson.toString())
+        server?.start(wait = false)
+        Log.i(TAG, "Ktor Inference HTTP server started on port $port")
     }
 
-    // ── CORS helpers ──────────────────────────────────────────────────────────
-
-    private fun corsResponse(status: Response.Status, mimeType: String, body: String): Response =
-        newFixedLengthResponse(status, mimeType, body).apply {
-            addHeader("Access-Control-Allow-Origin",  "*")
-            addHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-            addHeader("Access-Control-Allow-Headers", "Content-Type, Authorization")
-        }
+    fun stop() {
+        server?.stop(1000, 2000)
+        server = null
+        Log.i(TAG, "Ktor Inference HTTP server stopped")
+    }
 
     companion object {
         const val DEFAULT_PORT = 8080
-        private const val TAG  = "InferenceHttpServer"
-        private const val MIME_JSON = "application/json"
-        private const val SOCKET_READ_TIMEOUT = 5000 // ms
+        private const val TAG = "InferenceHttpServer"
     }
 }

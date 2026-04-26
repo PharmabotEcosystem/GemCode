@@ -245,7 +245,7 @@ class SkillManager @Inject constructor(
                     appendLine("    Triggers: ${skill.examples.joinToString(" | ")}")
                 }
             }
-            appendLine("To execute a skill, call: { \"tool\": \"SkillTool\", \"parameters\": { \"skill_id\": \"<id>\" } }")
+            appendLine("To execute a skill, call: { \"tool\": \"SkillTool\", \"parameters\": { \"action\": \"use_skill\", \"skill_name\": \"<name_or_id>\" } }")
         }
     }
 

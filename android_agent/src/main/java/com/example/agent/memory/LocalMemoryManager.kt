@@ -42,6 +42,9 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun memoryDao(): MemoryDao
 }
 
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+
 /**
  * Gestisce la memoria a lungo termine dell'agente usando un database locale e ricerca vettoriale.
  *
@@ -54,6 +57,8 @@ class LocalMemoryManager(
     private val embeddingModel: EmbeddingModelWrapper // Wrapper per un modello TFLite (es. MiniLM)
 ) {
 
+    private val stateMutex = Mutex()
+
     /**
      * Salva una nuova memoria generando il suo embedding.
      */
@@ -61,17 +66,21 @@ class LocalMemoryManager(
         // Genera embedding (es. vettore di 384 dimensioni per MiniLM)
         val vector = embeddingModel.getEmbedding(text)
         val vectorString = vector.joinToString(",") // Serializzazione semplice
-        
+
         db.memoryDao().insert(MemoryEntity(text = text, embedding = vectorString))
     }
 
     /**
      * Salva lo stato corrente della conversazione.
+     * Utilizza un Mutex per garantire che salvataggi concorrenti
+     * non sovrascrivano parzialmente la history causando perdita di dati.
      */
     suspend fun saveConversationState(state: String) = withContext(Dispatchers.IO) {
-        db.memoryDao().saveConversationState(
-            ConversationStateEntity(id = 1, state = state, timestamp = System.currentTimeMillis())
-        )
+        stateMutex.withLock {
+            db.memoryDao().saveConversationState(
+                ConversationStateEntity(id = 1, state = state, timestamp = System.currentTimeMillis())
+            )
+        }
     }
 
     /**

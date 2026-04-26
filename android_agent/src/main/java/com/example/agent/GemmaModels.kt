@@ -47,19 +47,9 @@ data class GemmaModel(
  *  - Model names must be unique.
  */
 val AVAILABLE_MODELS = listOf(
-    // ── Server remoto (nessun download, inferenza su PC o Termux) ────────────
-    GemmaModel("Ollama (locale Termux)",  backend = ModelBackend.OLLAMA,     maxTokens = 32768),
-    GemmaModel("LM Studio (PC locale)",   backend = ModelBackend.LM_STUDIO,  maxTokens = 32768),
-    // ── Gemma 4 — LiteRT-LM (.litertlm) — download HuggingFace litert-community ──
+    // ── Gemma 4 — LiteRT-LM (.litertlm) — L'unico modello nativamente supportato in locale ──
     GemmaModel("Gemma 4 E2B (CPU)", "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm?download=true", "gemma4_e2b_cpu.litertlm", useGpu = false, maxTokens = 8192, fileSizeMb = 2580),
     GemmaModel("Gemma 4 E2B (GPU)", "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it.litertlm?download=true", "gemma4_e2b_gpu.litertlm", useGpu = true,  maxTokens = 8192, fileSizeMb = 2580),
     GemmaModel("Gemma 4 E4B (CPU)", "https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it.litertlm?download=true", "gemma4_e4b_cpu.litertlm", useGpu = false, maxTokens = 8192, fileSizeMb = 3650),
     GemmaModel("Gemma 4 E4B (GPU)", "https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it.litertlm?download=true", "gemma4_e4b_gpu.litertlm", useGpu = true,  maxTokens = 8192, fileSizeMb = 3650),
-    // ── Gemma 3 — LiteRT-LM (rimpiazza Google Storage, ora su HuggingFace) ──
-    GemmaModel("Gemma 3 1B (CPU)", "https://huggingface.co/litert-community/gemma-3-1b-it-litert-lm/resolve/main/gemma-3-1b-it.litertlm?download=true", "gemma3_1b_cpu.litertlm", useGpu = false, maxTokens = 8192, fileSizeMb = 700),
-    GemmaModel("Gemma 3 1B (GPU)", "https://huggingface.co/litert-community/gemma-3-1b-it-litert-lm/resolve/main/gemma-3-1b-it.litertlm?download=true", "gemma3_1b_gpu.litertlm", useGpu = true,  maxTokens = 8192, fileSizeMb = 700),
-    // ── Gemma 3n (Nano) — ottimizzato per mobile, forma fattore minima ────────
-    GemmaModel("Gemma 3n E1B (CPU)", "https://huggingface.co/litert-community/gemma-3n-E1B-it-litert-lm/resolve/main/gemma-3n-E1B-it.litertlm?download=true", "gemma3n_e1b_cpu.litertlm", useGpu = false, maxTokens = 8192, fileSizeMb = 540),
-    GemmaModel("Gemma 3n E1B (GPU)", "https://huggingface.co/litert-community/gemma-3n-E1B-it-litert-lm/resolve/main/gemma-3n-E1B-it.litertlm?download=true", "gemma3n_e1b_gpu.litertlm", useGpu = true,  maxTokens = 8192, fileSizeMb = 540),
-    GemmaModel("Gemma 3n E4B (CPU)", "https://huggingface.co/litert-community/gemma-3n-E4B-it-litert-lm/resolve/main/gemma-3n-E4B-it.litertlm?download=true", "gemma3n_e4b_cpu.litertlm", useGpu = false, maxTokens = 8192, fileSizeMb = 2900),
 )
